@@ -257,7 +257,7 @@ No one can guarantee that nobody has built something similar. But with T11, T12,
 ## Task checklist
 
 - [x] T-1 Create the lab VM (Multipass)
-- [ ] T00 Project context file
+- [x] T00 Project context file
 - [ ] T01 Repository scaffold
 - [ ] T02 Setup script
 - [ ] T02b Architecture decisions
