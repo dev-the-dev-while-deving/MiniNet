@@ -256,9 +256,12 @@ No one can guarantee that nobody has built something similar. But with T11, T12,
 
 ## Task checklist
 
+`[ ]` free · `[~]` claimed (don't touch, see CLAUDE.md "Team workflow") · `[x]` done. Claim and push **before** starting.
+Every member does T-1 on their own machine; the box records that the scripts exist.
+
 - [x] T-1 Create the lab VM (Multipass)
 - [x] T00 Project context file
-- [ ] T01 Repository scaffold
+- [~] T01 Repository scaffold (claimed: dev-the-dev-while-deving, 2026-11-06)
 - [ ] T02 Setup script
 - [ ] T02b Architecture decisions
 - [ ] T03 Topology

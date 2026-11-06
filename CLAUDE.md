@@ -16,8 +16,17 @@ CIE3 Computer Networks mini project (team of four, 15 marks, judged in a viva). 
 ### Signature features (do not skip)
 T11 proactive fast-failover (OpenFlow `OFPGT_FF` groups), T12 mission-priority QoS, T20 explainable threat engine (score with reasons, multi-source correlation), T25 automated chaos test with charts. T22 threat-aware rerouting is optional.
 
+## Team workflow (two people, each with their own Claude Code)
+GitHub (`dev-the-dev-while-deving/MiniNet`, branch `main`) is the shared state. The checklist at the bottom of `CLAUDE-CODE-TASKS.md` is the lock that stops two people doing the same task.
+1. **Before starting anything:** `git pull --rebase`. Read the checklist and the Status section below.
+2. **Claim the task first:** change its line to `- [~] T03 Topology (claimed: <github-user>, <date>)`, then commit (`claim T03`) and **push straight away**, before writing any code. If the push is rejected, pull: someone else may have claimed it.
+3. Never start a task marked `[~]` by someone else, or one whose earlier tasks aren't `[x]` (unless it's a standalone piece the roadmap says can run in parallel, e.g. the controller on Mininet's sample topology).
+4. **When done:** tick `[x]`, update Status below, commit (`T03: ...`), `git pull --rebase`, then push. Push after every task, never sit on local commits.
+5. Shared files (`CLAUDE.md`, `CLAUDE-CODE-TASKS.md`, `config/fortress.yaml`, `docs/decisions.md`): keep edits small and pull right before editing them. On a merge conflict, keep both people's changes.
+6. Each person has their **own** VM. Machine-specific details (RAM, VM IP, snapshots) below are the original author's; yours may differ, and they're never committed as config.
+
 ## Lab environment
-- The host is an Apple Silicon (arm64) Mac with 24 GB RAM. The lab runs in an Ubuntu 22.04 arm64 **Multipass** VM named `fortress` (8 GB RAM, 4 CPUs, 40 GB disk), created by `scripts/vm/create_vm.sh` (task T-1).
+- The original author's host is an Apple Silicon (arm64) Mac with 24 GB RAM. The lab runs in an Ubuntu 22.04 arm64 **Multipass** VM named `fortress` (8 GB RAM, 4 CPUs, 40 GB disk), created by `scripts/vm/create_vm.sh` (task T-1).
 - This folder is mounted in the VM at `/home/ubuntu/fortress-net` (native 9p mount, so files edited on the Mac appear in the VM straight away).
 - Edit files on the Mac; run, install and test **only inside the VM** with `./scripts/vm/vm.sh <command>`. The arguments run under `bash -lc` in the project folder, so quote pipes: `./scripts/vm/vm.sh 'ip a | grep inet'`. Never install Mininet, OVS or FRR on the Mac.
 - If the `fortress` VM doesn't exist yet (`multipass list`), do task T-1 first.
@@ -77,8 +86,10 @@ Score 0–100 = Isolation Forest anomaly + rules: Suricata alert +30, >50 ports 
 Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, don't write network code that depends on them (VLAN handling under the controller, standalone/RSTP mode before T08, what runs in which namespace, where ML features come from, controller module layout, Ansible vs Jinja2).
 
 ## Status
-- Done: T-1 (VM `fortress` at 192.168.252.2, snapshot `clean-vm`), T00 (this file).
-- Next: T01, then T02, T02b.
+Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file).
+- In progress: T01 (dev-the-dev-while-deving).
+- Next free: T02 after T01; T02b can be written in parallel.
 
 ## Running the lab (from the Mac)
 These scripts don't exist yet; the task that creates each one is in brackets.
