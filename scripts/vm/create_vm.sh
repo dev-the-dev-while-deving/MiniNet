@@ -50,9 +50,15 @@ fi
 if multipass info "$VM" | grep -q "$MOUNT_POINT"; then
   echo "Project folder already mounted."
 else
-  # Native mounts are faster; fall back to the default (sshfs) type if unsupported.
-  multipass mount --type native "$PROJECT_DIR" "$VM:$MOUNT_POINT" \
-    || multipass mount "$PROJECT_DIR" "$VM:$MOUNT_POINT"
+  # Native mounts are faster but can only be added while the VM is stopped.
+  # If native isn't supported, fall back to the default (sshfs) type on a running VM.
+  multipass stop "$VM"
+  if multipass mount --type native "$PROJECT_DIR" "$VM:$MOUNT_POINT"; then
+    multipass start "$VM"
+  else
+    multipass start "$VM"
+    multipass mount "$PROJECT_DIR" "$VM:$MOUNT_POINT"
+  fi
 fi
 
 # --- 5. Open vSwitch kernel module ------------------------------------------
