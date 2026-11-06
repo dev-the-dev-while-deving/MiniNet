@@ -261,7 +261,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 
 - [x] T-1 Create the lab VM (Multipass)
 - [x] T00 Project context file
-- [~] T01 Repository scaffold (claimed: dev-the-dev-while-deving, 2026-11-06)
+- [ ] T01 Repository scaffold
 - [ ] T02 Setup script
 - [ ] T02b Architecture decisions
 - [ ] T03 Topology
