@@ -261,14 +261,14 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 
 - [x] T-1 Create the lab VM (Multipass)
 - [x] T00 Project context file
-- [~] T01 Repository scaffold (claimed: dev-the-dev-while-deving, 2026-11-06)
-- [ ] T02 Setup script
-- [ ] T02b Architecture decisions
-- [ ] T03 Topology
-- [ ] T04 DHCP and DNS
-- [ ] T05 Routing with FRR
-- [ ] T06 Gateway redundancy (VRRP)
-- [ ] T07 Lab start/stop
+- [~] T01 Repository scaffold (claimed: AyushKumar0615, 2026-11-06)
+- [~] T02 Setup script (claimed: AyushKumar0615, 2026-11-06)
+- [~] T02b Architecture decisions (claimed: AyushKumar0615, 2026-11-06)
+- [~] T03 Topology (claimed: AyushKumar0615, 2026-11-06)
+- [~] T04 DHCP and DNS (claimed: AyushKumar0615, 2026-11-06)
+- [~] T05 Routing with FRR (claimed: AyushKumar0615, 2026-11-06)
+- [~] T06 Gateway redundancy (VRRP) (claimed: AyushKumar0615, 2026-11-06)
+- [~] T07 Lab start/stop (claimed: AyushKumar0615, 2026-11-06)
 - [ ] T08 Ryu controller, base
 - [ ] T09 Reactive rerouting
 - [ ] T09b Early measurement tool

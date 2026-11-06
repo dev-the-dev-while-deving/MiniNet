@@ -88,8 +88,8 @@ Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, d
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
 - Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file).
-- In progress: T01 (dev-the-dev-while-deving).
-- Next free: T02 after T01; T02b can be written in parallel.
+- In progress: T01–T07 (AyushKumar0615). Everyone else waits for these to be pushed.
+- Next free: T08, once T07 is `[x]` on GitHub.
 
 ## Running the lab (from the Mac)
 These scripts don't exist yet; the task that creates each one is in brackets.
