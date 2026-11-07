@@ -186,3 +186,17 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 - **Proactive mode (T11)** buckets that lead over the aggregated link watch the select group itself (`watch_group`), so they stay live while any cable is up.
 - **In standalone mode** (`--standalone`) the two cables are just two parallel links and RSTP blocks one.
 - **For the viva:** LACP (802.3ad) is the protocol two switches use to agree to bundle cables. Here the bundling decision is made centrally by the controller, which already knows both cables lead to the same switch (LLDP). The data-plane behaviour is the same: per-flow load sharing and hitless loss of one cable. We don't run the LACP protocol itself.
+
+## T11: Proactive fast-failover
+
+**D25. Fast-failover groups, and what the numbers show.**
+- `--mode proactive` (passed to the controller as `FORTRESS_MODE`) makes every forwarding rule, except on the destination's own switch, point at an **OpenFlow fast-failover group** with two buckets: the primary next hop and a backup next hop. The backup is the best path once the primary link is removed (`paths.backup_next_hop`). Each bucket watches its port; the switch uses the first live bucket, so it fails over **in the data plane, without the controller**. Afterwards the reactive code (T09) still recomputes the trees and refreshes the groups. In the full lab: 186 groups; all failover checks pass with 0 lost pings at 10 pings/s.
+- **Known limit:** a backup next hop is only checked against the *primary* link, not against the neighbour's own choice. In this two-tier topology the neighbour's shortest path never leads back, so there are no loops; a deeper topology would need loop-free alternates (the standard name is LFA) or per-ingress rules.
+- **Measured** (`scripts/measure.py link c1 s1`, 100 pings/s, 5 runs each, `docs/results/early.csv`):
+
+| Mode | Lost pings per failure | Longest gap |
+|------|------------------------|-------------|
+| reactive | 2, 3, 2, 2, 2 | 51–56 ms |
+| proactive | 1, 1, 1, 0, 1 | 50–51 ms |
+
+  Proactive loses fewer packets (the switch reroutes before the controller has even heard of the failure). The **~50 ms gap appears in both modes, even in a run with 0 lost pings**, so it is a stall, not loss, caused by injecting the failure: taking both veth ends down makes OVS revalidate its datapath flows. Our 10 ms ping resolution can't separate the two modes' recovery times below that floor. T25 should measure with a failure that doesn't stall the datapath (for example dropping the cable's packets with `tc` instead of downing the interface) to show the real gap.

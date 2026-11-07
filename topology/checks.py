@@ -431,6 +431,22 @@ def check_lag_failover(net, lab, r):
             f"{sent - got} of {sent} (10 pings/s)")
 
 
+# --- T11: proactive fast-failover ---------------------------------------------------
+def check_fast_failover(net, lab, r):
+    """Proactive mode: forwarding rules point at OpenFlow fast-failover groups, each with a
+    primary and a backup bucket, so switches can fail over without the controller."""
+    import services
+    output("== Proactive fast-failover groups\n")
+    s = services.controller_status() or {}
+    r.check(s.get("mode") == "proactive", "controller is in proactive mode", s.get("mode", "?"))
+    total = 0
+    for sw in lab.access_switches + lab.core_switches:
+        out = net[sw].cmd(f"ovs-ofctl -O OpenFlow13 dump-groups {sw}")
+        total += sum(1 for l in out.splitlines() if "type=ff" in l and l.count("bucket=") == 2)
+    r.check(total > 0, "switches hold fast-failover groups (primary + backup bucket)",
+            f"{total} groups on the switches, {s.get('ff_groups', 0)} known to the controller")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -453,6 +469,8 @@ def run_all(net, lab, args):
     if not args.standalone:
         check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
+        if args.mode == "proactive":
+            check_fast_failover(net, lab, r)
     if args.check:
         # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
         check_vrrp_failover(net, lab, r)
