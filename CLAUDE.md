@@ -90,7 +90,7 @@ Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, d
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
 - Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`).
-- In progress: none.
+- In progress: T02b (dev-the-dev-while-deving).
 - Next free: T02b (architecture decisions), then T03.
 
 ## Running the lab (from the Mac)
