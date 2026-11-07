@@ -349,3 +349,26 @@ other's traffic, or gateway routers trunked to *both* cores so the core really i
 routed traffic. Both are changes to T03's topology, not to the controller, and the controller
 side is a small change once the topology supports it: the path weights already take which core
 to avoid as a parameter.
+
+## Housekeeping: log volume
+
+**D38. Quiet the VPN's logging, rotate per run, and read only the tail.**
+A full `--check` run reported that srv2 had collected **121,557 lines** from r3 alone, and
+`/var/log/fortress/srv2/remote/` had grown to **62 MB**. Nearly all of it was strongSwan logging
+every dead-peer-detection packet in both directions: dead-peer detection runs every second (D28,
+so a dead r1 is noticed quickly), and the `ike = 2` verbosity logged each exchange. Three changes:
+
+- **`net = -1`, `default = 0`, `ike = 1`** in `strongswan.conf`: the SA lifecycle is still
+  recorded, because "IKE_SA established" is the evidence the VPN check and the report want, but
+  the per-packet chatter is gone.
+- **Logs rotate at lab start**, keeping one previous generation (`.log.prev`, and the same for
+  `eve.json`). Each run's logs then belong to that run, which also makes them usable as evidence
+  for *this* demo rather than an undated pile.
+- **The threat engine reads only the last 512 KB** of `eve.json` and of each central log. It
+  re-reads them every 5 seconds, and anything recent enough to score (alerts within 30 s, logins
+  within 120 s) is at the end of the file. The engine's cost now depends on the time window, not
+  on how long the lab has been running.
+
+Measured after the change: the same run leaves **7 lines** from r3 and 204 KB in total, with the
+full suite still at 138/138. FRR 10.x also logs a handful of harmless `ZEBRA ... NB_OP_CHANGE`
+notification errors per start; those are upstream noise, not ours, and they are left alone.

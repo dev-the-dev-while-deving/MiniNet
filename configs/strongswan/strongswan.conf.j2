@@ -22,8 +22,14 @@ charon-systemd {
     fortress {
       path = {{ log_dir }}/charon.log
       time_format = %b %e %T
-      default = 1
-      ike = 2
+      # Quiet by default, but keep the IKE lifecycle (SA established, rekeyed, closed): that
+      # is the evidence the VPN check and the report want. "net = -1" switches off per-packet
+      # logging: with dead-peer detection every second it produced ~60 MB of logs per hour,
+      # all of it "sending packet" / "received packet" (decisions D38).
+      default = 0
+      ike = 1
+      cfg = 1
+      net = -1
     }
   }
 }

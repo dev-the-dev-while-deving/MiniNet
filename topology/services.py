@@ -418,6 +418,7 @@ def start_ids(net, lab, timeout=60):
     node_dirs(ids)
     log = LOG / ids / "suricata.log"
     log.unlink(missing_ok=True)          # so "engine started" below is from this run
+    rotate(LOG / ids / "eve.json")       # this run's alerts are this run's evidence
     net[ids].cmd(f"suricata -c {ETC / ids / 'suricata.yaml'} --af-packet -D "
                  f"--pidfile {RUN / ids / 'suricata.pid'} > {LOG / ids / 'suricata-stdout.txt'} 2>&1")
     start = time.time()
@@ -556,11 +557,24 @@ def start_ssh(net, lab):
             net[node].cmd(f"iptables-restore < {ETC / node / 'input.rules'}")
 
 
+def rotate(path):
+    """Keep one previous generation of a log, so each lab run's logs are its own.
+
+    Without this the central log and eve.json carry every earlier run: 62 MB of strongSwan
+    chatter after a day's testing, and evidence that is impossible to attribute to one run.
+    """
+    path = Path(path)
+    if path.exists() and path.stat().st_size:
+        path.replace(path.with_suffix(path.suffix + ".prev"))
+
+
 def start_logging(net, lab):
     """The rsyslog server on srv2, then a forwarder in every sending node (the controller's
     runs in the VM's root namespace and reaches srv2 through mon0)."""
     import subprocess
     srv = lab.host_with_role("syslog")["name"]
+    for old in (LOG / srv / "remote").glob("*.log"):
+        rotate(old)
     for node in [srv] + lab.log_senders():
         node_dirs(node)
         (RUN / node / "rsyslog").mkdir(exist_ok=True)

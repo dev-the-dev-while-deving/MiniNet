@@ -18,6 +18,25 @@ from pathlib import Path
 LOG = Path("/var/log/fortress")                       # same place services.py writes (D12)
 COLLECTOR_LATEST = LOG / "collector" / "latest.json"
 
+# The engine re-reads these files every few seconds, and both grow while the lab runs. Only the
+# end of a file can hold anything recent enough to matter (alerts within 30 s, logins within
+# 120 s), so reads are capped: the engine's cost then depends on the window, not on uptime.
+TAIL_BYTES = 512 * 1024
+
+
+def tail(path, max_bytes=TAIL_BYTES):
+    """The last `max_bytes` of a file as whole lines (a cut first line is dropped)."""
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()                  # drop the partial line we landed in
+            return f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return []
+
 # Our own Suricata rules live in the local SID range (detection/suricata/local.rules).
 # eve.json's "category" is a human-readable description ("Attempted Information Leak"), not the
 # rule's classtype, so the SID is what reliably says WHICH kind of thing fired.
@@ -45,7 +64,7 @@ def ids_alerts(ids_host="ids1", since=0.0, path=None):
     out = []
     if not path.exists():
         return out
-    for line in path.read_text(errors="replace").splitlines():
+    for line in tail(path):
         try:
             e = json.loads(line)
         except ValueError:
@@ -83,7 +102,7 @@ def failed_logins(syslog_node="srv2", since=0.0, log_dir=None):
     if not folder.is_dir():
         return out
     for log in sorted(folder.glob("*.log")):
-        for line in log.read_text(errors="replace").splitlines():
+        for line in tail(log):
             m = FAILED_LOGIN.match(line)
             if not m:
                 continue
