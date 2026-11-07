@@ -95,15 +95,19 @@ Follow these in every network task. If one turns out wrong, change `docs/decisio
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI).
-- In progress: T03–T07 (dev-the-dev-while-deving), one at a time.
-- Next free: T03 (topology).
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`). Tags: `v0.1-base`, `v0.2-routing`.
+- In progress: none.
+- Next free: T08 (Ryu controller, base).
 
 ## Running the lab (from the Mac)
-These scripts don't exist yet; the task that creates each one is in brackets.
-- Start: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh` (T07)
-- Stop: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`, which always runs `sudo mn -c` (T07)
-- Environment check: `./scripts/vm/vm.sh ./scripts/check_env.sh --smoke` (exists; all green after `setup_vm.sh`)
-- Tests: `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py` (T25)
-- Snapshot: `./scripts/vm/snapshot.sh <name>` (exists)
-- Config check: `./scripts/vm/vm.sh python3 scripts/check_config.py` (exists; run it after every edit to `fortress.yaml`)
+- Start: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh [--small]`: clean slate, clock, config check, topology, FRR (OSPF + VRRP), NAT, DHCP/DNS, health check, then the Mininet CLI. `exit` in the CLI stops everything.
+- Automated test: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check`: same start, plus the disruptive VRRP failover test, then stop. Exit code = number of failed checks.
+- Stop / clean up after a crash: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`. It runs `mn -c` and prints ✅ for no lab processes, no OVS bridges, no lab interfaces.
+- In the CLI: `fail r1` / `recover r1` simulate a power loss; `r1 vtysh -N r1 -c "show ip ospf neighbor"`; `cmd1 ping 172.16.70.10`.
+- The pieces: `topology/fortress_topo.py` (build), `topology/services.py` (daemons per node), `topology/render_configs.py` (templates in `configs/` → `/etc/fortress/<node>/`, `/etc/frr/<router>/`), `topology/checks.py` (health checks), `topology/labconfig.py` (values derived from `fortress.yaml`).
+- Gotcha: `mn -c` deletes `/tmp/*.log` and `/tmp/*.out`. Never log lab runs to those names.
+- Gotcha: `pkill -f <pattern>` run through `vm.sh` matches the wrapper shell's own command line and kills it. Write the pattern as `[t]opology/...`.
+- Environment check: `./scripts/vm/vm.sh ./scripts/check_env.sh --smoke` (all green after `setup_vm.sh`)
+- Config check: `./scripts/vm/vm.sh python3 scripts/check_config.py` (run it after every edit to `fortress.yaml`)
+- Snapshot: `./scripts/vm/snapshot.sh <name>`
+- Chaos tests: `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py` (doesn't exist yet; T25)

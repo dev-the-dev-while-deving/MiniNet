@@ -268,7 +268,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T04 DHCP and DNS
 - [x] T05 Routing with FRR
 - [x] T06 Gateway redundancy (VRRP)
-- [~] T07 Lab start/stop (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [x] T07 Lab start/stop
 - [ ] T08 Ryu controller, base
 - [ ] T09 Reactive rerouting
 - [ ] T09b Early measurement tool

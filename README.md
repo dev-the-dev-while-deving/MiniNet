@@ -26,10 +26,22 @@ Empty folders hold a `.gitkeep` until the task that fills them.
 ## Quick start
 
 1. Create the lab VM (below): `./scripts/vm/create_vm.sh`
-2. Install the lab software in it (T02): `./scripts/vm/vm.sh sudo ./scripts/setup_vm.sh`
-3. Start the lab (T07): `./scripts/vm/vm.sh sudo ./scripts/start_all.sh`
+2. Install the lab software in it: `./scripts/vm/vm.sh sudo ./scripts/setup_vm.sh`, then check it with `./scripts/vm/vm.sh ./scripts/check_env.sh --smoke`
+3. Start the lab: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh` (add `--small` on a 4 GB VM)
 
-Steps 2 and 3 work once those tasks are done.
+`start_all.sh` builds the whole network, starts routing, gateway redundancy, DHCP and DNS, prints a health check (all ✅) and opens the Mininet CLI. Things to try there:
+
+| Command | Shows |
+|---------|-------|
+| `cmd1 ping 172.16.70.10` | Command Center reaching the FOB through r1 and r3 |
+| `cmd1 traceroute -n 172.16.70.10` | the primary WAN path (r1, then r3) |
+| `r1 vtysh -N r1 -c "show ip ospf neighbor"` | OSPF adjacencies |
+| `r1 vtysh -N r1 -c "show vrrp summary"` | r1 is VRRP Master for every zone |
+| `fail r1`, then `cmd1 ping 192.168.10.1`, then `recover r1` | scenario 2: r2 takes over the gateways in about a second |
+
+Type `exit` to stop the lab. If anything goes wrong (a crash, a closed terminal), `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh` removes all leftovers and confirms the VM is clean.
+
+Automated check: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` runs every health check plus a live VRRP failover test and exits (0 = all passed).
 
 ## Lab VM
 
