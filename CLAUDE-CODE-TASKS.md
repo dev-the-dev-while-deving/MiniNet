@@ -283,7 +283,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T19 Anomaly model
 - [x] T20 ⭐ Explainable threat engine
 - [x] T21 Automatic response
-- [~] T22 ⭐ Threat-aware rerouting (optional) (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [ ] T22 ⭐ Threat-aware rerouting (optional: built, tested, and dropped: this topology cannot separate a zone from mission traffic by path. See decisions D37)
 - [x] T23 Monitoring stack
 - [x] T24 Telegram alerts and incident reports
 - [ ] T25 ⭐ Automated chaos test and results

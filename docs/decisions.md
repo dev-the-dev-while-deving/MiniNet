@@ -314,3 +314,38 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 - **Evidence before notification.** On a breach the engine blocks the host, writes `docs/incidents/<timestamp>-<host>.md`, and only then sends the message: containing the attack and recording what happened must not wait for a round trip to Telegram.
 - **One report and one alert per host per 300 s.** The score is recomputed every 5 s, and without this a single sustained breach would write a report and send a message twelve times a minute. The block is still refreshed on every pass.
 - Incident reports are git-ignored: they are real evidence, but they are regenerated on every test run, so they stay local and get attached to the report rather than committed.
+
+## T22: Threat-aware rerouting (attempted, then dropped)
+
+**D37. Not done, because this topology cannot separate a zone from mission traffic by path.**
+The roadmap marks T22 optional: during an insider attack the controller should quarantine the
+compromised access switch's traffic and route Command's around it. It was built and tested, and
+then removed. What the test showed:
+
+- **An access switch is never a transit node here.** Command sits on s1 and the servers on s5,
+  so Command-to-Servers traffic goes s1 to a core to s5. It never touches s4 (Barracks) in the
+  first place, so there is nothing to route "around".
+- **The cores are not a free choice for routed traffic.** Barracks may only reach the servers
+  and the internet, which are both *routed* destinations, so its traffic has to reach the VRRP
+  master r1 — and r1's trunk is on c1 only (r2's is on c2 only). Steering the zone onto the
+  standby core produces `s4 -> c2 -> c1`: a longer path to the same core, not separation. The
+  check proved it, showing s4 using both uplinks before *and* after the quarantine, because
+  different destinations legitimately resolve to different cores (traffic to r1 via c1, to r2
+  via c2).
+- **Sending the zone to the other router instead is not possible either.** Hosts address their
+  gateway by the VRRP virtual MAC, and the Backup keeps that MAC's interface down on purpose,
+  so frames for it can only be delivered to the current master.
+- **The QoS variant would duplicate T12.** Demoting a compromised zone's traffic to the lowest
+  queue is a real network-level response, but Barracks is already in the bulk queue (D26), so
+  for the demo's zone it changes nothing.
+
+What the response does instead, and why it is enough: the host is cut off at **its own access
+port** (T21), so its traffic never reaches a core switch at all. Containing the attacker at the
+edge is strictly better than steering it around the network, and the three demo scenarios do
+not need path changes to tell their story.
+
+**What would make T22 worthwhile:** a three-tier topology where access switches transit each
+other's traffic, or gateway routers trunked to *both* cores so the core really is a choice for
+routed traffic. Both are changes to T03's topology, not to the controller, and the controller
+side is a small change once the topology supports it: the path weights already take which core
+to avoid as a parameter.
