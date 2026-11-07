@@ -274,8 +274,8 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T09b Early measurement tool
 - [x] T10 LACP bond (as controller link aggregation, see decisions D24)
 - [x] T11 ⭐ Proactive fast-failover
-- [~] T12 ⭐ Mission-priority traffic (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [ ] T13 Zone isolation and rogue control
+- [x] T12 ⭐ Mission-priority traffic
+- [~] T13 Zone isolation and rogue control (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T14 IPsec VPN
 - [ ] T15 SSH and central logging (chrony optional)
 - [ ] T17 Suricata on mirror port

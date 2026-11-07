@@ -160,6 +160,21 @@ vpn:
   local_subnets: [192.168.0.0/16, 10.10.60.0/24]
   remote_subnets: [172.16.70.0/24]
 
+# --- Mission-priority traffic (T12, docs/decisions.md D26) ------------------
+# Every shared switch port (switch links, router trunks, server ports) is capped at
+# port_rate_mbit and split into queues. Linux HTB: each queue is guaranteed min_mbit;
+# spare capacity goes to the lowest priority number first. The controller's QOS table
+# puts each packet in a queue by its zone (source or destination subnet).
+qos:
+  port_rate_mbit: 50
+  queues:
+    0: {name: normal,  min_mbit: 10, priority: 1}
+    1: {name: mission, min_mbit: 30, priority: 0}
+    2: {name: bulk,    min_mbit: 5,  priority: 2}
+  classes:
+    mission: {queue: 1, zones: [command, communications]}   # traffic to or from these zones
+    bulk:    {queue: 2, zones: [barracks]}                  # traffic from these zones
+
 # --- Monitoring link (docs/decisions.md D12) ---------------------------------
 # mon0 lives in the VM's root namespace (not a Mininet namespace), so Prometheus and the
 # controller tools running on the VM can reach the lab. It plugs into the Management VLAN.

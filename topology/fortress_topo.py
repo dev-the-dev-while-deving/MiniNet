@@ -202,6 +202,22 @@ class FortressNet:
                 self.net[s].vsctl("set", "bridge", s, "rstp_enable=true",
                                   f"other_config:rstp-priority={prio}")
 
+    def configure_qos(self):
+        """T12: HTB queues on every port shared by several zones: switch links, router trunks
+        and the servers' ports (decisions D26). The controller picks the queue (set_queue)."""
+        q = self.lab.qos
+        rate = q["port_rate_mbit"] * 1_000_000
+        servers_sw = self.lab.zones["servers"]["switch"] if "servers" in self.lab.zones else None
+        for port, p in self.ports.items():
+            if not (p["trunk"] or p["switch"] == servers_sw):
+                continue
+            args = ["--", "set", "port", port, "qos=@q", "--", "--id=@q", "create", "qos", "type=linux-htb",
+                    f"other-config:max-rate={rate}"] + [f"queues:{n}=@q{n}" for n in q["queues"]]
+            for n, qq in q["queues"].items():
+                args += ["--", f"--id=@q{n}", "create", "queue", f"other-config:min-rate={qq['min_mbit'] * 1_000_000}",
+                         f"other-config:max-rate={rate}", f"other-config:priority={qq['priority']}"]
+            self.net[p["switch"]].vsctl(*args)
+
     def configure_routers(self):
         """Addresses on every router interface, plus the VLAN sub-interfaces on r1/r2."""
         lab, net = self.lab, self.net
@@ -286,6 +302,8 @@ class FortressNet:
         # s6 (FOB LAN) stays out of the SDN domain: no controller, plain learning switch.
         self.net[self.lab.fob_switch].vsctl("del-controller", self.lab.fob_switch)
         self.configure_switches()
+        if not self.args.standalone:
+            self.configure_qos()
         self.configure_routers()
         self.configure_monitor()
         return self.net

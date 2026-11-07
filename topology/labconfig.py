@@ -119,6 +119,7 @@ class Lab:
         self.backup_static_routes = self.cfg.get("backup_static_routes") or {}
         self.vpn = self.cfg["vpn"]
         self.ids = self.cfg["ids"]
+        self.qos = self.cfg["qos"]
 
         # --- Switches -----------------------------------------------------
         sw = self.cfg["switches"]

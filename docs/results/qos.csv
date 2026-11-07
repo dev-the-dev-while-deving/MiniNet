@@ -1,0 +1,2 @@
+date,port_rate_mbit,flood_mbit_asked,flood_mbit_got,command_rtt_quiet_ms,command_rtt_flood_ms,barracks_rtt_quiet_ms,barracks_rtt_flood_ms
+2026-11-07T05:19:37+00:00,50,100,48.6,0.335,0.042,0.708,11.357

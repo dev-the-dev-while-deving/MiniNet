@@ -115,11 +115,31 @@ class FortressController(app_manager.RyuApp):
         self.add_flow(dp, T_INGRESS, 200, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IPV6))
         self.add_flow(dp, T_POLICY, 0, p.OFPMatch(), goto=T_QOS)
         self.add_flow(dp, T_QOS, 0, p.OFPMatch(), goto=T_FORWARD)
+        self.install_qos(dp)
         # Table-miss in FORWARD: send the whole packet to the controller.
         self.add_flow(dp, T_FORWARD, 0, p.OFPMatch(),
                       [p.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)])
         dp.send_msg(p.OFPPortDescStatsRequest(dp, 0))
         self.logger.info("switch %s connected", self.swname(dp.id))
+
+    def install_qos(self, dp):
+        """T12: QOS table rules from fortress.yaml (decisions D26). Mission zones (Command,
+        Communications) go to the mission queue whether they send or receive; bulk zones
+        (Barracks) go to the bulk queue when they send. Everything else uses queue 0.
+        set_queue only marks the packet; the queue is used when it leaves through a port
+        with HTB queues (the topology sets those up)."""
+        p = dp.ofproto_parser
+        for cname, c in self.lab.qos["classes"].items():
+            prio = 30 if cname == "mission" else 20
+            for z in c["zones"]:
+                if z not in self.lab.zones:
+                    continue
+                net = self.lab.zones[z]["net"]
+                fields = ["ipv4_src", "ipv4_dst"] if cname == "mission" else ["ipv4_src"]
+                for field in fields:
+                    match = p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,
+                                       **{field: (str(net.network_address), str(net.netmask))})
+                    self.add_flow(dp, T_QOS, prio, match, [p.OFPActionSetQueue(c["queue"])], goto=T_FORWARD)
 
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def port_desc(self, ev):

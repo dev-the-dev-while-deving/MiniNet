@@ -109,6 +109,16 @@ def check(cfg):
     for r in cfg["vpn"]["ends"]:
         if r not in routers:
             errors.append(f"vpn: unknown router {r}")
+    queues = cfg["qos"]["queues"]
+    for cname, c in cfg["qos"]["classes"].items():
+        if c["queue"] not in queues:
+            errors.append(f"qos class {cname}: queue {c['queue']} is not defined")
+        for z in c["zones"]:
+            if z not in zones:
+                errors.append(f"qos class {cname}: unknown zone {z}")
+    if sum(q["min_mbit"] for q in queues.values()) > cfg["qos"]["port_rate_mbit"]:
+        errors.append("qos: the queues' min_mbit add up to more than port_rate_mbit")
+
     mon = cfg["monitor"]
     if mon["zone"] not in zones:
         errors.append(f"monitor: unknown zone {mon['zone']}")

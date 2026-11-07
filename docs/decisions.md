@@ -200,3 +200,12 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 | proactive | 1, 1, 1, 0, 1 | 50–51 ms |
 
   Proactive loses fewer packets (the switch reroutes before the controller has even heard of the failure). The **~50 ms gap appears in both modes, even in a run with 0 lost pings**, so it is a stall, not loss, caused by injecting the failure: taking both veth ends down makes OVS revalidate its datapath flows. Our 10 ms ping resolution can't separate the two modes' recovery times below that floor. T25 should measure with a failure that doesn't stall the datapath (for example dropping the cable's packets with `tc` instead of downing the interface) to show the real gap.
+
+## T12: Mission-priority traffic
+
+**D26. QoS with OVS HTB queues and controller-chosen queues.**
+- **Queues** (`qos:` in `fortress.yaml`): every port shared by several zones (switch links, router trunks, the servers' ports on s5) gets a Linux HTB setup capped at **50 Mbit/s**, split into queue 0 *normal* (min 10, priority 1), queue 1 *mission* (min 30, priority 0) and queue 2 *bulk* (min 5, priority 2). HTB guarantees each queue its minimum and hands spare capacity to the lowest priority number first. The 50 Mbit/s cap exists so a test flood can actually fill a link: Mininet's veth links have no speed of their own.
+- **Classification** is the controller's QOS table (table 2): traffic **to or from** Command and Communications → `set_queue 1`; traffic **from** Barracks → `set_queue 2`; everything else → queue 0. It matches on IP subnets, not VLANs, because routed traffic changes VLAN at the router but keeps its source and destination addresses, so Command's packets stay in the mission queue on both legs.
+- **Measured** in `--check` (`docs/results/qos.csv`): iperf3 asks for 100 Mbit/s UDP from bar1 to srv3 and gets **48.6 Mbit/s** (the cap). Meanwhile Command's ping to srv1 stays **under 0.4 ms** (0.34 quiet, 0.04 during the flood), while another Barracks host's ping to srv1 goes from 0.71 ms to **11.4 ms**, queued behind mission traffic. (Command being faster during the flood is most likely the busy VM keeping the CPU awake, not QoS.)
+- Standalone mode has no queues (`set_queue` needs the controller).
+- **For the viva:** this is the military theme driving a real QoS design: during a failure the surviving links are shared, and Command's traffic must not suffer for the Barracks' downloads.

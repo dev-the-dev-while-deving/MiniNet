@@ -447,6 +447,69 @@ def check_fast_failover(net, lab, r):
             f"{total} groups on the switches, {s.get('ff_groups', 0)} known to the controller")
 
 
+# --- T12: mission-priority traffic --------------------------------------------------
+def avg_rtt(out):
+    m = re.search(r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/", out)
+    return float(m.group(1)) if m else None
+
+
+def check_qos(net, lab, r):
+    """Disruptive (--check only): flood the links from Barracks (iperf3, UDP 100 Mbit/s towards
+    a server, twice the 50 Mbit/s port rate) and compare ping times to srv1 from Command
+    (mission queue) and from another Barracks host (bulk queue), before and during the flood.
+    Results go to docs/results/qos.csv."""
+    import csv
+    import json
+    from datetime import datetime, timezone
+    from labconfig import ROOT
+    output("== Mission-priority traffic (Barracks flood vs Command latency)\n")
+    cmd = net[next(iter(lab.zones["command"]["hosts"]))]
+    bars = [net[h] for h in lab.zones["barracks"]["hosts"]]
+    flooder, bulk = bars[0], bars[1] if len(bars) > 1 else None
+    srv1 = lab.host_with_role("dhcp-dns")["ip"]
+    target = next(h for h in lab.hosts.values() if h["role"] == "web-file")
+    rate = lab.qos["port_rate_mbit"]
+
+    def rtts():
+        pid_c = cmd.cmd(f"ping -n -q -c 20 -i 0.2 -W 2 {srv1} > /tmp/qos-cmd.txt 2>&1 & echo $!").strip().splitlines()[-1]
+        pid_b = bulk.cmd(f"ping -n -q -c 20 -i 0.2 -W 2 {srv1} > /tmp/qos-bulk.txt 2>&1 & echo $!").strip().splitlines()[-1] if bulk else None
+        cmd.cmd(f"wait {pid_c}")
+        if bulk:
+            bulk.cmd(f"wait {pid_b}")
+        return avg_rtt(cmd.cmd("cat /tmp/qos-cmd.txt")), (avg_rtt(bulk.cmd("cat /tmp/qos-bulk.txt")) if bulk else None)
+
+    quiet_cmd, quiet_bulk = rtts()
+    net[target["name"]].cmd("iperf3 -s -1 -D")
+    time.sleep(1)
+    pid = flooder.cmd(f"iperf3 -c {target['ip']} -u -b {2 * rate}M -t 8 -J > /tmp/qos-iperf.json 2>&1 & echo $!").strip().splitlines()[-1]
+    time.sleep(2)
+    busy_cmd, busy_bulk = rtts()
+    flooder.cmd(f"wait {pid}")
+    try:
+        got = json.loads(flooder.cmd("cat /tmp/qos-iperf.json"))["end"]["sum"]["bits_per_second"] / 1e6
+    except (ValueError, KeyError):
+        got = None
+    fmt = lambda v: f"{v:.2f} ms" if v is not None else "no reply"
+    r.check(got is not None and got < 1.1 * rate, f"Barracks flood capped by the {rate} Mbit/s ports",
+            f"iperf3 got {got:.1f} Mbit/s of {2 * rate} asked" if got else "iperf3 gave no result")
+    r.check(busy_cmd is not None and busy_cmd < 10, f"Command ({cmd.name}) latency stays low during the flood",
+            f"{fmt(quiet_cmd)} quiet -> {fmt(busy_cmd)} during the flood")
+    if bulk:
+        r.check(busy_bulk is None or (busy_cmd is not None and busy_bulk > 3 * busy_cmd),
+                f"Barracks ({bulk.name}) traffic waits behind mission traffic",
+                f"{fmt(quiet_bulk)} quiet -> {fmt(busy_bulk)} during the flood")
+    out = ROOT / "docs" / "results" / "qos.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    new = not out.exists()
+    with open(out, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["date", "port_rate_mbit", "flood_mbit_asked", "flood_mbit_got", "command_rtt_quiet_ms",
+                        "command_rtt_flood_ms", "barracks_rtt_quiet_ms", "barracks_rtt_flood_ms"])
+        w.writerow([datetime.now(timezone.utc).isoformat(timespec="seconds"), rate, 2 * rate,
+                    round(got, 1) if got else "", quiet_cmd, busy_cmd, quiet_bulk, busy_bulk])
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -477,5 +540,7 @@ def run_all(net, lab, args):
         if not args.standalone:
             check_lag_failover(net, lab, r)
             check_reroute(net, lab, r)
+            if "barracks" in lab.zones:
+                check_qos(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed
