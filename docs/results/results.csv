@@ -1,0 +1,51 @@
+date,failure,mechanism,mode,run,src,dst,sent,received,lost,recovery_s,healed,vpn_wait_s
+2026-11-07T15:45:01+00:00,link c1-s1 down,SDN reroute,reactive,1,cmd1,10.10.60.12,651,651,0,0.025,True,
+2026-11-07T15:45:19+00:00,link c1-s1 down,SDN reroute,reactive,2,cmd1,10.10.60.12,650,649,1,0.024,True,
+2026-11-07T15:45:37+00:00,link c1-s1 down,SDN reroute,reactive,3,cmd1,10.10.60.12,658,656,2,0.046,True,
+2026-11-07T15:45:55+00:00,link c1-s1 down,SDN reroute,reactive,4,cmd1,10.10.60.12,650,649,1,0.035,True,
+2026-11-07T15:46:13+00:00,link c1-s1 down,SDN reroute,reactive,5,cmd1,10.10.60.12,656,655,1,0.029,True,
+2026-11-07T15:46:31+00:00,one c1-c2 cable down,link aggregation,reactive,1,r1,192.168.10.3,664,664,0,0.02,True,
+2026-11-07T15:46:49+00:00,one c1-c2 cable down,link aggregation,reactive,2,r1,192.168.10.3,668,668,0,0.016,True,
+2026-11-07T15:47:07+00:00,one c1-c2 cable down,link aggregation,reactive,3,r1,192.168.10.3,670,670,0,0.025,True,
+2026-11-07T15:47:25+00:00,one c1-c2 cable down,link aggregation,reactive,4,r1,192.168.10.3,667,667,0,0.028,True,
+2026-11-07T15:47:43+00:00,one c1-c2 cable down,link aggregation,reactive,5,r1,192.168.10.3,660,660,0,0.018,True,
+2026-11-07T15:48:02+00:00,router r1 power loss,VRRP,reactive,1,cmd1,10.10.60.12,718,715,3,0.062,True,
+2026-11-07T15:48:21+00:00,router r1 power loss,VRRP,reactive,2,cmd1,10.10.60.12,737,734,3,0.05,True,
+2026-11-07T15:48:40+00:00,router r1 power loss,VRRP,reactive,3,cmd1,10.10.60.12,723,722,1,0.024,True,
+2026-11-07T15:48:59+00:00,router r1 power loss,VRRP,reactive,4,cmd1,10.10.60.12,742,741,1,0.029,True,
+2026-11-07T15:49:18+00:00,router r1 power loss,VRRP,reactive,5,cmd1,10.10.60.12,729,726,3,0.055,True,
+2026-11-07T15:49:37+00:00,router r1 power loss (gateway .1),VRRP takeover,reactive,1,cmd1,192.168.10.1,721,721,0,0.02,True,
+2026-11-07T15:49:56+00:00,router r1 power loss (gateway .1),VRRP takeover,reactive,2,cmd1,192.168.10.1,714,713,1,0.024,True,
+2026-11-07T15:50:15+00:00,router r1 power loss (gateway .1),VRRP takeover,reactive,3,cmd1,192.168.10.1,717,716,1,0.021,True,
+2026-11-07T15:50:34+00:00,router r1 power loss (gateway .1),VRRP takeover,reactive,4,cmd1,192.168.10.1,709,708,1,0.018,True,
+2026-11-07T15:50:53+00:00,router r1 power loss (gateway .1),VRRP takeover,reactive,5,cmd1,192.168.10.1,719,718,1,0.022,True,
+2026-11-07T15:51:19+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),reactive,1,cmd1,172.16.70.10,1107,1105,2,0.045,True,0.06
+2026-11-07T15:51:45+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),reactive,2,cmd1,172.16.70.10,1120,1116,4,0.057,True,0.05
+2026-11-07T15:52:11+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),reactive,3,cmd1,172.16.70.10,1114,1110,4,0.071,True,0.05
+2026-11-07T15:52:37+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),reactive,4,cmd1,172.16.70.10,1116,1113,3,0.06,True,0.05
+2026-11-07T15:53:03+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),reactive,5,cmd1,172.16.70.10,1114,1110,4,0.052,True,0.05
+2026-11-07T15:53:40+00:00,link c1-s1 down,SDN reroute,proactive,1,cmd1,10.10.60.12,665,665,0,0.019,True,
+2026-11-07T15:53:58+00:00,link c1-s1 down,SDN reroute,proactive,2,cmd1,10.10.60.12,646,646,0,0.029,True,
+2026-11-07T15:54:16+00:00,link c1-s1 down,SDN reroute,proactive,3,cmd1,10.10.60.12,664,663,1,0.022,True,
+2026-11-07T15:54:34+00:00,link c1-s1 down,SDN reroute,proactive,4,cmd1,10.10.60.12,657,657,0,0.019,True,
+2026-11-07T15:54:52+00:00,link c1-s1 down,SDN reroute,proactive,5,cmd1,10.10.60.12,661,661,0,0.021,True,
+2026-11-07T15:55:10+00:00,one c1-c2 cable down,link aggregation,proactive,1,r1,192.168.10.3,675,675,0,0.019,True,
+2026-11-07T15:55:28+00:00,one c1-c2 cable down,link aggregation,proactive,2,r1,192.168.10.3,677,677,0,0.021,True,
+2026-11-07T15:55:46+00:00,one c1-c2 cable down,link aggregation,proactive,3,r1,192.168.10.3,668,668,0,0.02,True,
+2026-11-07T15:56:04+00:00,one c1-c2 cable down,link aggregation,proactive,4,r1,192.168.10.3,671,671,0,0.018,True,
+2026-11-07T15:56:22+00:00,one c1-c2 cable down,link aggregation,proactive,5,r1,192.168.10.3,675,675,0,0.018,True,
+2026-11-07T15:56:41+00:00,router r1 power loss,VRRP,proactive,1,cmd1,10.10.60.12,709,709,0,0.027,True,
+2026-11-07T15:57:00+00:00,router r1 power loss,VRRP,proactive,2,cmd1,10.10.60.12,734,733,1,0.025,True,
+2026-11-07T15:57:19+00:00,router r1 power loss,VRRP,proactive,3,cmd1,10.10.60.12,718,715,3,0.061,True,
+2026-11-07T15:57:38+00:00,router r1 power loss,VRRP,proactive,4,cmd1,10.10.60.12,724,723,1,0.026,True,
+2026-11-07T15:57:57+00:00,router r1 power loss,VRRP,proactive,5,cmd1,10.10.60.12,734,734,0,0.021,True,
+2026-11-07T15:58:16+00:00,router r1 power loss (gateway .1),VRRP takeover,proactive,1,cmd1,192.168.10.1,729,728,1,0.021,True,
+2026-11-07T15:58:35+00:00,router r1 power loss (gateway .1),VRRP takeover,proactive,2,cmd1,192.168.10.1,718,717,1,0.023,True,
+2026-11-07T15:58:54+00:00,router r1 power loss (gateway .1),VRRP takeover,proactive,3,cmd1,192.168.10.1,717,715,2,0.056,True,
+2026-11-07T15:59:13+00:00,router r1 power loss (gateway .1),VRRP takeover,proactive,4,cmd1,192.168.10.1,710,709,1,0.019,True,
+2026-11-07T15:59:32+00:00,router r1 power loss (gateway .1),VRRP takeover,proactive,5,cmd1,192.168.10.1,727,726,1,0.019,True,
+2026-11-07T15:59:58+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),proactive,1,cmd1,172.16.70.10,1123,1119,4,0.061,True,0.06
+2026-11-07T16:00:24+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),proactive,2,cmd1,172.16.70.10,1107,1104,3,0.055,True,0.06
+2026-11-07T16:00:50+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),proactive,3,cmd1,172.16.70.10,1106,1103,3,0.044,True,0.05
+2026-11-07T16:01:16+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),proactive,4,cmd1,172.16.70.10,1106,1103,3,0.064,True,0.04
+2026-11-07T16:01:42+00:00,primary WAN r1-r3 down,OSPF (VPN on loopbacks),proactive,5,cmd1,172.16.70.10,1111,1107,4,0.056,True,0.05

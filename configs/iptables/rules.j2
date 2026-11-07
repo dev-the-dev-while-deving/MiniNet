@@ -6,6 +6,13 @@
 :OUTPUT ACCEPT [0:0]
 :POSTROUTING ACCEPT [0:0]
 {% for intf in nat_out %}
+# NAT exemption (D39): traffic for an address inside the lab is never translated. For a moment
+# after a link fails, before OSPF installs the detour, the kernel can send it along the default
+# route to the ISP; once translated, every later packet of that connection would keep the wrong
+# source (the VPN's own packets included), long after the route is fixed.
+{% for net in internal %}
+-A POSTROUTING -o {{ intf }} -d {{ net }} -j RETURN
+{% endfor %}
 # NAT: traffic leaving towards the ISP gets {{ router }}'s address on {{ intf }} as its source,
 # so the internet never sees the base's internal addresses.
 -A POSTROUTING -o {{ intf }} -j MASQUERADE
@@ -30,6 +37,12 @@ COMMIT
 {% endif %}
 # Every lab node may send its logs to the central syslog server {{ syslog }} (T15).
 -A FORWARD -d {{ syslog }} -p udp --dport 514 -j ACCEPT
+# VPN in transit (D39): the tunnel runs between {{ vpn_ends[0] }} and {{ vpn_ends[1] }} (loopbacks). If the
+# primary WAN is cut, its packets detour through this router: let IKE (UDP 500/4500) and ESP pass.
+{% for s, d in [(vpn_ends[0], vpn_ends[1]), (vpn_ends[1], vpn_ends[0])] %}
+-A FORWARD -s {{ s }} -d {{ d }} -p esp -j ACCEPT
+-A FORWARD -s {{ s }} -d {{ d }} -p udp -m multiport --dports 500,4500 -j ACCEPT
+{% endfor %}
 # The monitoring host may reach everything (and everything may answer it).
 -A FORWARD -s {{ monitor }} -j ACCEPT
 {% for r in allow %}

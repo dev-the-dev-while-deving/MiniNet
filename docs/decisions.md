@@ -226,7 +226,7 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 
 **D28. strongSwan per router, loaded over VICI.**
 - **One `charon-systemd` daemon in r1's and in r3's namespace**, each with its own `strongswan.conf` (passed in `STRONGSWAN_CONF`), control socket and log in `/var/log/fortress/<router>/charon.log`. The classic `charon` daemon has a fixed PID file, so two copies can't run on one VM.
-- **The tunnel:** IKEv2 with a pre-shared key, AES-256/SHA-256/DH-14 for IKE, AES-256-GCM ESP in **tunnel mode**, protecting `192.168.0.0/16, 10.10.60.0/24 ↔ 172.16.70.0/24`. It runs between the two ends of the primary WAN link (10.0.0.5 ↔ 10.0.0.6). The Servers subnet is included because Servers may reach the FOB (see the T01 note on `fortress.yaml`).
+- **The tunnel:** IKEv2 with a pre-shared key, AES-256/SHA-256/DH-14 for IKE, AES-256-GCM ESP in **tunnel mode**, protecting `192.168.0.0/16, 10.10.60.0/24 ↔ 172.16.70.0/24`. It first ran between the two ends of the primary WAN link (10.0.0.5 ↔ 10.0.0.6); since T25 it runs between the routers' loopbacks (1.1.1.1 ↔ 3.3.3.3), so it survives a cut WAN cable (D39). The Servers subnet is included because Servers may reach the FOB (see the T01 note on `fortress.yaml`).
 - **Loaded with strongSwan's Python VICI library (`topology/vpn.py`), not `swanctl`.** Ubuntu's AppArmor profile only lets `swanctl` use the default socket `/run/charon.vici` ("Permission denied" in the audit log), and two routers need two sockets. VICI is strongSwan's own control protocol (swanctl speaks it too), so `vpn.json` holds exactly the settings a `swanctl.conf` would. We don't loosen AppArmor.
 - **The key:** made fresh at every lab start with `secrets.token_urlsafe(32)` (or taken from `FORTRESS_VPN_PSK`), and only written to `vpn.json` (mode 600) on the VM's own disk. It never goes in the repo.
 - **Checking "only ESP on the wire" needs care:** Linux shows a decrypted incoming tunnel packet on the receiving interface again, so a plain `tcpdump -i r1-r3` shows plaintext ICMP that never crossed the cable. The check captures *outgoing* packets on both ends (`-Q out`), which together are exactly what crosses the link: 10 ESP, 0 plain ICMP.
@@ -372,3 +372,73 @@ so a dead r1 is noticed quickly), and the `ike = 2` verbosity logged each exchan
 Measured after the change: the same run leaves **7 lines** from r3 and 204 KB in total, with the
 full suite still at 138/138. FRR 10.x also logs a handful of harmless `ZEBRA ... NB_OP_CHANGE`
 notification errors per start; those are upstream noise, not ours, and they are left alone.
+
+## T25: Chaos test and results
+
+**D39. The chaos test found two faults; the VPN now runs between loopbacks.**
+`scripts/chaos_test.py` repeats each failure 5 times in both controller modes. Its first full run
+looked perfect, every recovery under 50 ms, and that was the warning sign: OSPF's dead interval
+is 4 s, so a WAN failover can't be 35 ms. Checking the raw ping logs found:
+
+- **A measuring bug.** `measure()` took the longest gap *between two replies*. If traffic stops
+  and never comes back, there is no "next reply", so the outage was invisible: one WAN run lost
+  994 of 1108 pings and still reported 21 ms. The fix brackets the replies with the start and end
+  of the run, so silence at the edges counts, and measures the normal ping spacing (Mininet hosts
+  manage about 55 pings/s, not the 100 requested) instead of assuming it. Each run also records
+  **`healed`**: whether replies were flowing again in the last second *before* the failure was
+  repaired. That is the difference between a network that heals itself and one that only works
+  again once someone fixes the cable.
+- **A real fault: the VPN did not survive a cut primary WAN.** The tunnel ran between 10.0.0.5
+  and 10.0.0.6, the two addresses *on* the r1-r3 cable (D28). Cut it, and OSPF moved the FOB route
+  to r1 -> r2 -> r3, but r1's IPsec policy still caught the traffic and sent it, encrypted, to
+  10.0.0.6, which no longer had a route. Base <-> FOB was dead until the cable came back. This was
+  missed because the T05 backup-route test ran before the VPN existed (T14), and the VPN test
+  only checked the healthy path.
+- **The fix, the standard one** ("tunnel source Loopback0" on Cisco): every router gets a
+  loopback address equal to its OSPF router ID (r1 1.1.1.1, r3 3.3.3.3), set in `frr.conf` and
+  advertised into OSPF, and the tunnel runs between the loopbacks. A loopback isn't tied to any
+  cable, so when r1-r3 is cut the *encrypted* packets take OSPF's detour through r2 (cost 110,
+  cheaper than the 120 via the ISP r4, whose NAT would break IKE). r2's firewall forwards IKE
+  (UDP 500/4500) and ESP between the two loopbacks only. Result: 1 ping lost, healed in about
+  22 ms, still encrypted. `check_wan_failover` in `--check` now cuts r1-r3 and proves the FOB is
+  still reachable, the tunnel is still up and the detour r2-r3 carries only ESP.
+- **Explained, not a fault: hosts don't notice r1's power loss (about 40 ms)**, although
+  VRRP needs about 0.7 s (3 missed adverts at 200 ms) before r2 says Master. A timeline showed
+  r2's forwarding counter climbing about 100 packets/s from 0.2 s after the failure, while r2
+  still said Backup: r2's VRRP interface already owns the virtual MAC, so once the controller
+  stops sending frames to r1's dead port they reach r2, which routes them. Even pings to the
+  gateway address itself lost nothing (0 of 188 in `--check`, about 40 ms in the chaos test). The
+  0.7 s is VRRP's *bookkeeping* time; the time traffic is cut is the controller's.
+- **More VPN faults the repeated runs exposed**, each fixed:
+  - *The tunnel never came back after r1's power loss.* Dead-peer detection restarted it while r1
+    was unreachable, and with strongSwan's default of one try both ends gave up for good.
+    Now `keyingtries = 0` (keep trying), and the tunnel is back 2-7 s after r1 recovers; `--check`
+    now tests that.
+  - *One initiator, one responder.* Both ends used to bring the tunnel up and raced each other
+    after every recovery. Now r1 initiates and rebuilds (`start_action/dpd_action/close_action =
+    start/restart/start`), r3 only answers and clears a dead tunnel (`none/clear/none`, so the
+    D28 fallback still works), and `unique = replace` stops a reconnect leaving a duplicate.
+    That exposed a start-up race: if r1 asks before r3 has loaded its config, r3 answers "no
+    config" and strongSwan treats that answer as final. `services.start_vpn` now loads r3 first.
+  - *MOBIKE off.* It is for roaming clients and only sent address updates on every cable cut.
+  - *NAT exemption.* For a moment after a cut, before OSPF installs the detour, r1's kernel
+    route to the FOB pointed at the default route to the ISP, where everything is masqueraded,
+    and a translated connection keeps its translation. r1/r2 now never translate traffic for
+    lab addresses (zones, FOB, router links, loopbacks). It is a safeguard: it did not change the
+    residual case below.
+- **Residual, measured limit.** The *first* WAN cut straight after a router power loss
+  sometimes (about half of those rounds) blackholes the encrypted traffic for about 4.9 s, which
+  is how long dead-peer detection takes to give up and r1 to rebuild the tunnel over the detour.
+  The network still heals by itself, while the cable is still cut. Every other cut recovers in
+  under 75 ms, encrypted. Ruled out: the tunnel is stable after recovery when nothing is cut
+  (30 s of pings, no gaps, 3 of 3), the captures show ESP crossing r2 correctly in good runs, and
+  the NAT exemption didn't change it. The cause is below what strongSwan's quietened logging
+  (D38) shows. `--check` therefore runs its WAN test before its power-loss test (the designed
+  behaviour, on a settled tunnel), and the chaos test keeps its order and reports the real
+  spread, with the median next to the mean so one slow run can't hide the typical value.
+- **Why the ping counts look low:** Mininet hosts manage about 55 pings/s, and ping slows down
+  further while no replies come back, so `lost` undercounts long outages. `recovery_s` (the
+  longest silence) is the number to trust.
+
+D28's known limit (r1 dying completely sends base <-> FOB traffic unencrypted via r2) still holds;
+the loopbacks fix the cut-cable case, not the dead-router case.

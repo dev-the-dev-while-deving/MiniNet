@@ -366,7 +366,9 @@ def start_vpn(net, lab, timeout=20):
                          f"> {LOG / r / 'charon-stdout.txt'} 2>&1 & echo $!").strip().splitlines()[-1]
         (RUN / r / "charon.pid").write_text(pid + "\n")
     start = time.time()
-    for r in lab.vpn["ends"]:
+    # Load the responder (r3) before the initiator (r1): if r1 asks first, r3 answers "no
+    # config" and strongSwan treats that answer as final, so the tunnel never comes up (D39).
+    for r in reversed(lab.vpn["ends"]):
         while not (RUN / r / "charon.vici").exists() and time.time() - start < timeout:
             time.sleep(0.2)
         out = vpn_cmd(net, r, f"load {ETC / r / 'vpn.json'}")
@@ -383,6 +385,17 @@ def vpn_up(net, lab):
     """True if the first VPN router has an ESTABLISHED IKE SA with an INSTALLED tunnel."""
     out = vpn_cmd(net, lab.vpn["ends"][0], "status")
     return "ESTABLISHED" in out and "INSTALLED" in out
+
+
+def wait_for_vpn(net, lab, timeout=30):
+    """Wait until the tunnel is up again (e.g. after r1 recovered from a power loss, when r3's
+    dead-peer detection had removed it). Returns the seconds it took, or None on timeout."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if vpn_up(net, lab):
+            return time.time() - t0
+        time.sleep(0.25)
+    return None
 
 
 # --- Web/file server on srv3 (T18: something normal to talk to) -----------------------

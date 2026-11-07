@@ -9,7 +9,8 @@ Run inside the VM as root, from the Mac:
 It starts the whole lab, runs a 100 pings/s stream between two hosts, triggers the failure,
 restores it, and reports:
     lost      packets that never came back
-    recovery  the longest gap between two replies, i.e. how long traffic stopped
+    recovery  the longest time without a reply, i.e. how long traffic stopped
+    healed    whether traffic was flowing again BEFORE the failure was repaired
 Results are printed and appended to docs/results/early.csv (one row per run).
 The lab is stopped afterwards.
 """
@@ -30,30 +31,45 @@ import fortress_topo
 import services
 from labconfig import Lab
 
-INTERVAL = 0.01          # 100 pings/s: recovery times are accurate to about 10 ms
+INTERVAL = 0.01          # ask for 100 pings/s (Mininet manages ~55/s): accurate to ~20 ms
 CSV_FILE = ROOT / "docs" / "results" / "early.csv"
 
 
 def measure(net, src, dst_ip, fail, restore, before=2.0, during=4.0, after=4.0, name="measure"):
-    """Ping dst_ip from src at 100/s, call fail() after `before` s and restore() `during` s later.
-    Returns {"sent", "received", "lost", "recovery_s"}. recovery_s is the longest silence between
-    two consecutive replies (minus the normal 10 ms spacing): how long traffic was cut."""
+    """Ping dst_ip from src as fast as -i INTERVAL allows, call fail() after `before` s and
+    restore() `during` s later. Returns:
+        sent, received, lost   ping's own counts
+        recovery_s             the longest time with no reply, minus the normal spacing between
+                               replies: how long traffic was cut. The end of the run counts too,
+                               so traffic that never comes back shows as a long cut, not as 0.
+        healed                 True if replies were flowing again in the last second BEFORE
+                               restore(): the network healed itself while the failure was still
+                               in place. False means traffic only came back once we repaired it.
+    """
     total = before + during + after
     log = f"/var/run/fortress/{src.name}/{name}.txt"
     # -D prints a timestamp on every reply, so gaps can be measured exactly.
     pid = src.cmd(f"ping -n -D -i {INTERVAL} -w {total:.0f} {dst_ip} > {log} 2>&1 & echo $!").strip().splitlines()[-1]
+    t_start = time.time()
     time.sleep(before)
     fail()
     time.sleep(during)
+    t_restore = time.time()
     restore()
     src.cmd(f"wait {pid}")
     out = src.cmd(f"cat {log}")
     stamps = [float(t) for t in re.findall(r"^\[(\d+\.\d+)\] \d+ bytes from", out, re.M)]
     m = re.search(r"(\d+) packets transmitted, (\d+) received", out)
     sent, received = (int(m.group(1)), int(m.group(2))) if m else (0, len(stamps))
+    # Mininet hosts can't always keep up 100 pings/s, so the normal spacing is measured, not assumed.
     gaps = [b - a for a, b in zip(stamps, stamps[1:])]
-    recovery = max(0.0, max(gaps, default=0.0) - INTERVAL)
-    return {"sent": sent, "received": received, "lost": sent - received, "recovery_s": round(recovery, 3)}
+    spacing = sorted(gaps)[len(gaps) // 2] if gaps else INTERVAL
+    # Bracket the replies with the start and end of the run, so silence at either edge counts.
+    edges = [t_start + 0.5] + stamps + [t_start + total]
+    longest = max(b - a for a, b in zip(edges, edges[1:]))
+    healed = any(t_restore - 1.0 <= t < t_restore for t in stamps)
+    return {"sent": sent, "received": received, "lost": sent - received,
+            "recovery_s": round(max(0.0, longest - spacing), 3), "healed": healed}
 
 
 def scenario(net, args):
@@ -102,7 +118,9 @@ def main():
     CSV_FILE.parent.mkdir(parents=True, exist_ok=True)
     new = not CSV_FILE.exists()
     with open(CSV_FILE, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        # Keep the existing file's columns (rows from older runs may lack newer fields).
+        fields = list(rows[0]) if new else next(csv.reader(open(CSV_FILE)))
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         if new:
             w.writeheader()
         w.writerows(rows)

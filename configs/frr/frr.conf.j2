@@ -6,6 +6,15 @@ hostname {{ router }}
 log file {{ log_dir }}/frr.log informational
 service integrated-vtysh-config
 !
+! Loopback {{ router_id }}/32: an address that belongs to the router, not to any one cable, so it
+! stays reachable over whichever path OSPF has left. The IPsec VPN is anchored on it (D39), like
+! "tunnel source Loopback0" on a Cisco router. Passive: no OSPF packets are sent on it.
+interface lo
+ ip address {{ router_id }}/32
+ ip ospf area 0
+ ip ospf passive
+exit
+!
 {% for i in links %}
 ! Point-to-point link to {{ i.peer }} ({{ i.ip }}/30). Cost {{ i.cost }}: lower wins, so this decides the primary path.
 ! Hello every 1 s and dead after 4 s, so a dead neighbour is noticed in seconds (default: 40 s).

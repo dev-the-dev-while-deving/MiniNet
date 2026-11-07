@@ -115,9 +115,15 @@ def iptables(lab, out):
                                   "src": src, "dst": f"-d {lab.zones[target]['net']}"})
         mgmt = str(lab.zones["management"]["net"]) if "management" in lab.zones else None
         syslog = lab.host_with_role("syslog")["ip"]
+        vpn_ends = [lab.routers[e]["router_id"] for e in lab.vpn["ends"]]
+        # Everything inside the lab (not the internet): zones, FOB, router links, loopbacks.
+        internet = str(lab.internet["net"])
+        internal = [n for n in lab.lab_subnets() if n != internet]
+        internal += [f"{i['router_id']}/32" for i in lab.routers.values()]
         text = env.get_template("iptables/rules.j2").render(router=r, nat_out=nat_out, dns=dns,
                                                             monitor=lab.monitor["ip"], allow=allow,
-                                                            mgmt=mgmt, syslog=syslog)
+                                                            mgmt=mgmt, syslog=syslog, vpn_ends=vpn_ends,
+                                                            internal=internal)
         files.append(write(out / r / "iptables.rules", text))
     return files
 
@@ -131,8 +137,10 @@ def strongswan(lab, out):
     import secrets
     psk = os.environ.get("FORTRESS_VPN_PSK") or secrets.token_urlsafe(32)
     a, b = lab.vpn["ends"]
-    link = next(l for l in lab.links if {l["a"], l["b"]} == {a, b})
-    ip = {link["a"]: link["a_ip"], link["b"]: link["b_ip"]}
+    # The tunnel runs between the routers' loopback addresses (their OSPF router IDs), not the
+    # addresses on the primary WAN cable: cut that cable and the tunnel follows OSPF's detour
+    # through r2 instead of dying with it (decisions D39).
+    ip = {r: lab.routers[r]["router_id"] for r in (a, b)}
     ts = {a: lab.vpn["local_subnets"], b: lab.vpn["remote_subnets"]}
     files = []
     for r, peer in ((a, b), (b, a)):
@@ -142,16 +150,30 @@ def strongswan(lab, out):
             "secret": {"id": "ike-base-fob", "type": "IKE", "data": psk, "owners": [r, peer]},
             "connection": {"base-fob": {
                 "version": "2",                                  # IKEv2
-                "local_addrs": [ip[r]], "remote_addrs": [ip[peer]],   # the two ends of the primary WAN link
+                "local_addrs": [ip[r]], "remote_addrs": [ip[peer]],   # the two routers' loopbacks
                 "proposals": ["aes256-sha256-modp2048"],         # IKE SA: AES-256, SHA-256, DH group 14
                 "dpd_delay": "1s",                               # dead peer detection: check the peer every second
+                # MOBIKE lets a roaming client move its tunnel to a new address. Our ends are fixed
+                # loopbacks, so it only adds address updates on every cable cut (D39): off.
+                "mobike": "no",
+                # Keep trying to (re)connect forever. With the default (1 try), a peer that was
+                # unreachable when dead-peer detection restarted the tunnel (r1 during a power
+                # loss) made both ends give up, and the VPN stayed down after r1 came back (D39).
+                "keyingtries": "0",
+                # A reconnect replaces the old SAs instead of adding a duplicate next to them.
+                "unique": "replace",
                 "local": {"auth": "psk", "id": r},
                 "remote": {"auth": "psk", "id": peer},
                 "children": {"base-fob": {
                     "local_ts": ts[r], "remote_ts": ts[peer],    # which subnets are protected
                     "mode": "tunnel",                            # ESP tunnel mode: whole packets encrypted
                     "esp_proposals": ["aes256gcm16-modp2048"],
-                    "start_action": "start", "dpd_action": "restart", "close_action": "start",
+                    # One initiator, one responder (D39). r1 (the base) brings the tunnel up and
+                    # rebuilds it whenever it is lost; r3 only answers, and clears a dead tunnel so
+                    # FOB traffic can take the backup path (D28). When both ends initiated, they
+                    # raced after every recovery and the duplicate SAs broke the tunnel later.
+                    **({"start_action": "start", "dpd_action": "restart", "close_action": "start"} if r == a
+                       else {"start_action": "none", "dpd_action": "clear", "close_action": "none"}),
                 }},
             }},
         }

@@ -295,6 +295,10 @@ def check_vrrp_failover(net, lab, r):
         time.sleep(0.2)
     r.check(back is not None, f"{g1} Master and {g2} Backup again after {g1} recovered (preemption)",
             f"{back:.1f} s" if back is not None else "not within 20 s")
+    # A dead r1 makes r3's dead-peer detection drop the tunnel (D28); it must come back by itself.
+    vpn_back = services.wait_for_vpn(net, lab)
+    r.check(vpn_back is not None, f"the VPN is up again after {g1} recovered",
+            f"{vpn_back:.1f} s" if vpn_back is not None else "not within 30 s")
     host.cmd(f"wait {ping_pid}")   # let the 20 s ping finish
     out = host.cmd(f"cat {log}")
     m = re.search(r"(\d+) packets transmitted, (\d+) received", out)
@@ -605,6 +609,42 @@ def check_vpn(net, lab, r):
     r.check(esp > 0 and icmp == 0, f"only encrypted ESP on the WAN link {wan}",
             f"{esp} ESP packets, {icmp} plain ICMP packets on the wire (both directions)")
 
+
+
+def check_wan_failover(net, lab, r):
+    """Disruptive (--check only): cut the primary WAN cable r1-r3. OSPF moves the FOB route
+    to r1 -> r2 -> r3, and because the tunnel runs between loopbacks (D39) it follows: Command
+    still reaches the FOB, and the detour r2-r3 carries only ESP, never plain ICMP."""
+    import services
+    output("== WAN failover with the VPN (primary r1-r3 cut)\n")
+    a, b = lab.vpn["ends"]
+    g2 = next(g for g in lab.gateway_routers() if g != a)
+    src = net[next(iter(lab.zones["command"]["hosts"]))]
+    fob1 = next(h for h in lab.hosts.values() if h["zone"] == "fob")
+    # The test is "cut the WAN while the VPN is up", so make sure it is (an earlier disruptive
+    # test may just have restarted it).
+    services.wait_for_vpn(net, lab)
+    net.configLinkStatus(a, b, "down")
+    try:
+        time.sleep(1)
+        caps = []
+        for node, intf in ((g2, f"{g2}-{b}"), (b, f"{b}-{g2}")):
+            cap = f"/var/run/fortress/{node}/wan-failover-capture.txt"
+            net[node].cmd(f"timeout 6 tcpdump -lni {intf} -Q out 'esp or icmp' > {cap} 2>&1 &")
+            caps.append((node, cap))
+        time.sleep(1)
+        reached = ping(src, fob1["ip"], count=5)
+        time.sleep(5)
+        lines = [l for node, cap in caps for l in net[node].cmd(f"cat {cap}").splitlines()]
+        esp = sum(" ESP(" in l for l in lines)
+        icmp = sum(" ICMP " in l for l in lines)
+        r.check(reached, f"{src.name} still reaches {fob1['name']} with {a}-{b} cut", f"via {g2}")
+        r.check(services.vpn_up(net, lab), "the IPsec tunnel stays up over the detour", "anchored on loopbacks (D39)")
+        r.check(esp > 0 and icmp == 0, f"only encrypted ESP on the detour {g2}-{b}",
+                f"{esp} ESP packets, {icmp} plain ICMP packets on the wire")
+    finally:
+        net.configLinkStatus(a, b, "up")
+    time.sleep(5)   # let OSPF move back to the primary link before the next test
 
 # --- T15: SSH and central logging --------------------------------------------------
 SSH_OPTS = ("-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
@@ -922,6 +962,9 @@ def run_all(net, lab, args):
             check_fast_failover(net, lab, r)
     if args.check:
         # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
+        # WAN first: it checks the designed behaviour on a settled tunnel. (The first WAN cut
+        # straight after a router power loss can take ~5 s; the chaos test measures that, D39.)
+        check_wan_failover(net, lab, r)
         check_vrrp_failover(net, lab, r)
         if not args.standalone:
             check_lag_failover(net, lab, r)
