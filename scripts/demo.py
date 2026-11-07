@@ -117,7 +117,7 @@ class Demo:
         self.point(self.stream_report(since),
                    f"The controller logged {len(new)} reroute event(s), {moved} paths moved, computed in {ms or '-'}"
                    " (/var/log/fortress/ryu/reroutes.jsonl)",
-                   "Measured over 5 runs: about 20-30 ms of interruption (docs/results/summary.csv)")
+                   "Measured over 5 runs per mode: about 20-30 ms of interruption (docs/results/summary.csv)")
         self.net.configLinkStatus(c1, s1, "up")
 
     def reroutes(self):

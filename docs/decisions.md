@@ -440,5 +440,13 @@ is 4 s, so a WAN failover can't be 35 ms. Checking the raw ping logs found:
   further while no replies come back, so `lost` undercounts long outages. `recovery_s` (the
   longest silence) is the number to trust.
 
+**Final results** (`docs/results/summary.csv`, 5 runs per failure and mode, all 50 runs healed by
+themselves; median recovery, reactive / proactive): link c1-s1 23 / 31 ms, one core cable 19 /
+19 ms, r1 power loss 37 / 28 ms (routed) and 50 / 31 ms (gateway address), primary WAN 27 / 48 ms.
+The ping stream resolves about 20 ms, and an earlier full run had the cable and WAN orderings the
+other way round, so the modes are not reliably different here; only r1's power loss favoured
+proactive in both runs. Insider response (`detection.csv`): blocked in 5/5 runs, median 6.3 s
+after the sweep began (1.3-7.3 s), scores 92-93 from four signals. The full suite is 142/142.
+
 D28's known limit (r1 dying completely sends base <-> FOB traffic unencrypted via r2) still holds;
 the loopbacks fix the cut-cable case, not the dead-router case.

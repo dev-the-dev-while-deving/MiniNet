@@ -68,27 +68,34 @@ Result, from [`summary.csv`](results/summary.csv) (all 50 runs healed by themsel
 
 | Failure | Mechanism | Reactive median (min-max) | Proactive median (min-max) |
 |---------|-----------|---------------------------|----------------------------|
-| Link c1-s1 down | SDN reroute / fast-failover | 29 ms (24-46) | 21 ms (19-29) |
-| One c1-c2 cable down | link aggregation | 20 ms (16-28) | 19 ms (18-21) |
-| r1 power loss (routed traffic) | VRRP | 50 ms (24-62) | 26 ms (21-61) |
-| r1 power loss (pinging the gateway) | VRRP takeover | 21 ms (18-24) | 21 ms (19-56) |
-| Primary WAN r1-r3 down | OSPF, VPN on loopbacks | 57 ms (45-71) | 56 ms (44-64) |
+| Link c1-s1 down | SDN reroute / fast-failover | 23 ms (18-33) | 31 ms (19-37) |
+| One c1-c2 cable down | link aggregation | 19 ms (17-20) | 19 ms (17-20) |
+| r1 power loss (routed traffic) | VRRP | 37 ms (18-73) | 28 ms (24-80) |
+| r1 power loss (pinging the gateway) | VRRP takeover | 50 ms (16-55) | 31 ms (18-49) |
+| Primary WAN r1-r3 down | OSPF, VPN on loopbacks | 27 ms (17-72) | 48 ms (20-64) |
 
 ![Recovery per failure](results/recovery_by_failure.png)
 
 **Reading the numbers honestly.** Mininet hosts manage about 55 pings/s, so the measurement
 resolves about 20 ms; most of these recoveries are at or near that floor. What the table really
-shows: every failure heals by itself, in well under a tenth of a second, in both modes. The
-clearest difference between the modes is r1's power loss, where the proactive backup buckets move
-traffic to r2's port without waiting for the controller. VRRP itself takes 0.7 s to declare r2
+shows: every failure heals by itself, in well under a tenth of a second, in both modes. Between
+the modes there is **no consistent difference**: across two full runs, the faster mode flipped for
+the cut cable and the WAN cut. The one repeatable gap is r1's power loss (proactive 26 and 28 ms,
+reactive 50 and 37 ms), where the proactive backup buckets move traffic to r2's port without
+waiting for the controller. In this small, fast lab the controller reacts almost as quickly as the
+switch; fast-failover would matter more where the controller is far away or busy. VRRP itself takes 0.7 s to declare r2
 Master, yet hosts lose nothing, because r2 already owns the virtual MAC and forwards as soon as
 frames reach it (D39).
 
-**Insider response timing** (`detection.csv`, `detection_to_block.png`): the chaos test also runs
-the insider scenario 5 times and times the first IDS alert, the Breach score and the block. In our
-runs so far the first alert comes about 1.3 s after the sweep starts and the block 1.3-6.3 s after
-it; the spread is where the sweep falls in the engine's 5-second scoring cycle. Scores were 92-93
-from four signals (anomaly, IDS, port sweep, refused connections).
+**Insider response timing** ([`detection.csv`](results/detection.csv)): the chaos test also runs
+the insider scenario 5 times and times the first IDS alert, the Breach score and the block.
+Result: **blocked in 5 of 5 runs, median 6.3 s** after the sweep started (1.3-7.3 s). The first
+Suricata alert came 1.3 s in every run (the first check after the 200-port sweep finishes). The
+block always landed in the same engine cycle as the Breach score; the spread is where the sweep
+falls in the engine's 5-second cycle. Scores were 92-93, each from the same four signals (anomaly,
+IDS signature, port sweep, refused connections).
+
+![Detection to block](results/detection_to_block.png)
 
 ## 4. Other measurements
 

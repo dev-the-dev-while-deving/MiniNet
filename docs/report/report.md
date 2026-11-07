@@ -15,7 +15,7 @@ router or a lost WAN link is bypassed automatically, and an automated chaos test
 recovery five times in two controller modes. All 50 runs healed without human help, typically in
 20-60 ms. The network also defends itself: a compromised host scanning from the Barracks is
 scored 92-93/100 from four independent signals, with the reason for every point written down, and
-is cut off at its own switch port within 1-7 seconds, while its neighbours carry on unaffected.
+is cut off at its own switch port within 1.3-7.3 seconds (median 6.3 s), while its neighbours carry on unaffected.
 
 ## 1. Introduction
 
@@ -126,23 +126,27 @@ check the repair. Final result: **142/142**.
 
 | Failure | Mechanism | Reactive | Proactive | Healed by itself |
 |---------|-----------|----------|-----------|------------------|
-| Core–access cable cut | SDN reroute / fast-failover | 29 ms | 21 ms | 10/10 |
-| One of two core cables cut | link aggregation | 20 ms | 19 ms | 10/10 |
-| Gateway router r1 loses power | VRRP | 50 ms | 26 ms | 10/10 |
-| Primary WAN cut | OSPF, VPN on loopbacks | 57 ms | 56 ms | 10/10 |
+| Core–access cable cut | SDN reroute / fast-failover | 23 ms | 31 ms | 10/10 |
+| One of two core cables cut | link aggregation | 19 ms | 19 ms | 10/10 |
+| Gateway router r1 loses power | VRRP | 37 ms | 28 ms | 10/10 |
+| Primary WAN cut | OSPF, VPN on loopbacks | 27 ms | 48 ms | 10/10 |
 
 ![Recovery time per failure](../results/recovery_by_failure.png)
 
 The measurement resolves about 20 ms, so most of these are at its floor: the honest conclusion is
-that every failure is bypassed automatically in well under 0.1 s. The proactive mode's advantage
-is clearest when r1 dies.
+that every failure is bypassed automatically in well under 0.1 s. Between the two modes there
+is no consistent difference except r1's power loss, where proactive was faster in both full runs
+(26 vs 50 ms, then 28 vs 37 ms): in a small lab the controller reacts almost as fast as the
+switch itself.
 
 ### 4.3 Insider attack
-Over our timed runs, a 200-port sweep from Barracks host bar3 was first flagged by Suricata about
-1.3 s after it started, scored 92-93/100 from four signals (model, IDS signature, port sweep,
-refused connections), and blocked at bar3's own switch port 1.3-6.3 s after the sweep began; bar1
-on the same switch was unaffected. The spread is set by the engine's 5-second scoring cycle.
-`chaos_test.py` repeats this five times and charts it (`detection_to_block.png`).
+In 5 timed runs, a 200-port sweep from Barracks host bar3 was flagged by Suricata 1.3 s after it
+started, scored 92-93/100 from four signals (model, IDS signature, port sweep, refused
+connections), and **blocked at bar3's own switch port in 5 of 5 runs, median 6.3 s** after the
+sweep began (1.3-7.3 s); bar1 on the same switch was unaffected. The spread is set by the
+engine's 5-second scoring cycle.
+
+![Detection to block](../results/detection_to_block.png)
 
 ### 4.4 Mission-priority QoS
 With the Barracks flooding at twice the link rate, the Command Center's round-trip time stayed

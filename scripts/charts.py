@@ -60,26 +60,30 @@ def grouped_bars(rows, field, ylabel, title, out):
 
 
 def detection_chart(out):
-    """One horizontal bar per insider run: sweep start -> first alert -> Breach -> blocked."""
+    """One line per insider run, with a marker where each stage happened: first IDS alert,
+    Breach score, blocked. (The block usually lands in the same engine cycle as the Breach,
+    so the two markers sit on top of each other; that is the point: no human delay.)"""
     rows = list(csv.DictReader(open(RESULTS / "detection.csv")))
-    stages = [("alert_s", "first IDS alert", "#4C72B0"), ("breach_s", "score 70+ (Breach)", "#DD8452"),
-              ("block_s", "blocked at its port", "#C44E52")]
-    fig, ax = plt.subplots(figsize=(9, 0.5 * len(rows) + 1.8))
+    stages = [("alert_s", "first IDS alert", "o", "#4C72B0", 9),
+              ("breach_s", "score 70+ (Breach)", "s", "#DD8452", 11),
+              ("block_s", "blocked at its own port", "x", "#C44E52", 12)]
+    end = max(float(r["block_s"] or 0) for r in rows)
+    fig, ax = plt.subplots(figsize=(9, 0.55 * len(rows) + 2.2))
     for i, r in enumerate(rows):
-        prev = 0.0
-        for field, label, color in stages:
-            if not r[field]:
-                continue
-            t = float(r[field])
-            ax.barh(i, t - prev, left=prev, color=color, label=label if i == 0 else None)
-            prev = t
-        ax.text(prev + 0.2, i, f"{prev:.0f} s  (score {r['score']})", va="center", fontsize=9)
+        last = max(float(r[f]) for f, *_ in stages if r[f])
+        ax.plot([0, last], [i, i], color="#999999", linewidth=1, zorder=1)
+        for field, label, marker, color, size in stages:
+            if r[field]:
+                ax.plot(float(r[field]), i, marker=marker, color=color, markersize=size, linestyle="none",
+                        markeredgewidth=2, label=label if i == 0 else None, zorder=2)
+        ax.text(last + 0.25, i, f"blocked after {last:.1f} s, score {r['score']}", va="center", fontsize=9)
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([f"run {r['run']}" for r in rows])
     ax.invert_yaxis()
+    ax.set_xlim(0, end + 3.5)
     ax.set_xlabel("seconds since the port sweep started")
     ax.set_title("Insider attack: detection to block, per run")
-    ax.legend(loc="lower right")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=3, frameon=False)
     ax.grid(axis="x", alpha=0.3)
     fig.tight_layout()
     fig.savefig(out, dpi=150)
