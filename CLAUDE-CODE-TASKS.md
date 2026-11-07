@@ -286,7 +286,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [ ] T22 ⭐ Threat-aware rerouting (optional: built, tested, and dropped: this topology cannot separate a zone from mission traffic by path. See decisions D37)
 - [x] T23 Monitoring stack
 - [x] T24 Telegram alerts and incident reports
-- [ ] T25 ⭐ Automated chaos test and results
+- [~] T25 ⭐ Automated chaos test and results (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T26 Demo mode
 - [ ] T27 Documentation and report
 - [ ] T28 Viva prep sheet
