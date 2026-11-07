@@ -15,3 +15,6 @@ date,scenario,mode,run,src,dst,sent,received,lost,recovery_s
 2026-11-07T05:16:00+00:00,link c1-s1 down,proactive,3,cmd1,srv3,430,429,1,0.051
 2026-11-07T05:16:16+00:00,link c1-s1 down,proactive,4,cmd1,srv3,413,413,0,0.051
 2026-11-07T05:16:32+00:00,link c1-s1 down,proactive,5,cmd1,srv3,427,426,1,0.051
+2026-11-07T06:12:11+00:00,link c1-s1 down,reactive,1,cmd1,srv3,425,422,3,0.066
+2026-11-07T06:12:27+00:00,link c1-s1 down,reactive,2,cmd1,srv3,406,403,3,0.057
+2026-11-07T06:12:43+00:00,link c1-s1 down,reactive,3,cmd1,srv3,389,386,3,0.068

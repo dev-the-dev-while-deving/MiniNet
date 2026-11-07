@@ -191,11 +191,35 @@ def rsyslog(lab, out):
     return files
 
 
+def suricata(lab, out):
+    """suricata.yaml for ids1, plus a copy of our rule files next to it (T17).
+
+    The rules are copied out of the repo into /etc/fortress/ids1/rules/ so Suricata only ever
+    reads from the VM's own disk (decisions D12), and so a half-edited rule file in the shared
+    folder can't take the IDS down mid-run.
+    """
+    import shutil
+    ids = lab.ids["host"]
+    rules_src = ROOT / "detection" / "suricata"
+    rules_dst = out / ids / "rules"
+    rules_dst.mkdir(parents=True, exist_ok=True)
+    for name in ("local.rules", "et-open.rules"):
+        if (rules_src / name).exists():
+            shutil.copy(rules_src / name, rules_dst / name)
+    # HOME_NET: everything inside the base and the FOB. The simulated internet stays external.
+    home = [str(z["net"]) for z in lab.zones.values()] + [str(lab.fob["net"])]
+    text = env.get_template("suricata/suricata.yaml.j2").render(
+        node=ids, home_net=",".join(home), log_dir=LOG / ids, rule_dir=rules_dst,
+        interfaces=[f"{ids}-{c}" for c in lab.ids["attach_to"]],
+        et_open=(rules_dst / "et-open.rules").exists())
+    return [write(out / ids / "suricata.yaml", text)]
+
+
 def render_all(lab, out=ETC, frr_out=FRR_ETC):
     """Render every config. Returns the list of files written."""
     out, frr_out = Path(out), Path(frr_out)
     return (dnsmasq(lab, out) + frr(lab, frr_out) + iptables(lab, out) + strongswan(lab, out)
-            + ssh(lab, out) + rsyslog(lab, out))
+            + ssh(lab, out) + rsyslog(lab, out) + suricata(lab, out))
 
 
 if __name__ == "__main__":

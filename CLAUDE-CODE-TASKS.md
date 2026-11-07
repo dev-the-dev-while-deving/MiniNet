@@ -278,9 +278,9 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T13 Zone isolation and rogue control
 - [x] T14 IPsec VPN
 - [x] T15 SSH and central logging (chrony optional: not needed, see D29)
-- [~] T17 Suricata on mirror port (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [ ] T18 Flow collector and baseline
-- [ ] T19 Anomaly model
+- [x] T17 Suricata on mirror port
+- [x] T18 Flow collector and baseline
+- [~] T19 Anomaly model (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T20 ⭐ Explainable threat engine
 - [ ] T21 Automatic response
 - [ ] T22 ⭐ Threat-aware rerouting (optional)

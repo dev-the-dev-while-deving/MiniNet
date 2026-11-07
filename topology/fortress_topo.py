@@ -15,7 +15,7 @@ What gets built (see docs/decisions.md D10-D12):
     cores c1, c2 joined by a trunk; access switches s1..s5, each with an uplink to both cores;
     zone hosts on VLAN-tagged access ports; r1/r2 with a trunk into c1/c2 and one VLAN
     sub-interface per zone; r3 (FOB) with its own LAN switch s6; r4 (ISP) with an internet host;
-    /30 links between routers; ids1 on both cores (parked until T17); mon0 in the VM's root namespace.
+    /30 links between routers; ids1 on both cores (mirror outputs, T17); mon0 in the VM's root namespace.
 """
 import argparse
 import ipaddress
@@ -38,7 +38,6 @@ from labconfig import Lab
 
 OF_PORT = 6653
 CORE_CABLES = ("a", "b")    # two parallel c1-c2 cables, c1-c2a and c1-c2b (T10, decisions D24)
-PARK_VLAN = 4094   # unused VLAN for ids1's ports, so they receive nothing until the mirrors exist (T17)
 
 
 class LinuxRouter(Host):
@@ -163,12 +162,13 @@ class FortressNet:
             sys.exit("fortress_topo.py supports exactly one internet host (it is cabled straight to r4)")
         self.link(r4, inet_hosts[0]["name"], f"{r4}-inet", f"{inet_hosts[0]['name']}-eth0")
 
-        # ids1: one port on each core, parked on an unused VLAN until the mirrors exist (D13, T17).
+        # ids1: one port on each core, each the output of that core's mirror (D13, T17).
+        # No VLAN tag: configure_mirrors() reserves these ports for mirrored traffic only.
         ids = lab.ids["host"]
         net.addHost(ids, ip=None)
         for c in lab.ids["attach_to"]:
             self.link(ids, c, f"{ids}-{c}", f"{c}-{ids}")
-            self.switch_port(f"{c}-{ids}", c, tag=PARK_VLAN, edge=True)
+            self.switch_port(f"{c}-{ids}", c, edge=True)
 
         # mon0: in the VM's root namespace, so tools on the VM can reach the lab (D12).
         mon = lab.monitor
@@ -201,6 +201,22 @@ class FortressNet:
                 prio = {lab.core_switches[0]: 4096, lab.core_switches[1]: 8192}.get(s, 32768)
                 self.net[s].vsctl("set", "bridge", s, "rstp_enable=true",
                                   f"other_config:rstp-priority={prio}")
+
+    def configure_mirrors(self):
+        """T17: copy every packet crossing a core switch to ids1's port on that core.
+
+        OVS "select_all" mirrors both directions of every port, so a packet that crosses the
+        core is copied twice (in and out); the flow collector (T18) counts each packet once by
+        only counting it on its source VLAN (decisions D13). Naming a port as a mirror output
+        also reserves it: OVS discards anything ids1 itself sends, so the IDS can't inject
+        traffic into the lab even though it sits on a core switch.
+        """
+        ids = self.lab.ids["host"]
+        for c in self.lab.ids["attach_to"]:
+            self.net[c].vsctl("--", "--id=@p", "get", "port", f"{c}-{ids}",
+                              "--", "--id=@m", "create", "mirror", f"name=fortress-{c}",
+                              "select_all=true", "output_port=@p",
+                              "--", "set", "bridge", c, "mirrors=@m")
 
     def configure_qos(self):
         """T12: HTB queues on every port shared by several zones: switch links, router trunks
@@ -302,6 +318,7 @@ class FortressNet:
         # s6 (FOB LAN) stays out of the SDN domain: no controller, plain learning switch.
         self.net[self.lab.fob_switch].vsctl("del-controller", self.lab.fob_switch)
         self.configure_switches()
+        self.configure_mirrors()
         if not self.args.standalone:
             self.configure_qos()
         self.configure_routers()

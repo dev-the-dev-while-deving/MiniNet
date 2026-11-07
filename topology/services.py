@@ -11,6 +11,7 @@ using the PID files, so nothing is left running after the lab stops.
 import os
 import shutil
 import signal
+import sys
 import time
 from pathlib import Path
 
@@ -18,6 +19,9 @@ from mininet.log import info
 
 import render_configs
 from render_configs import ETC, LOG, RUN, ROOT
+
+sys.path.insert(0, str(ROOT / "detection"))
+import sources   # noqa: E402  (needs ROOT above)
 
 UDHCPC_SCRIPT = ROOT / "configs" / "udhcpc" / "fortress-udhcpc-script"
 
@@ -239,6 +243,11 @@ def recover_node(net, name):
 
 
 # --- IPsec VPN to the FOB (T14) -------------------------------------------------------
+def lab_user():
+    """The normal (non-root) user that owns the venvs and the admin SSH key."""
+    return os.environ.get("SUDO_USER") or "ubuntu"
+
+
 def fortress_python():
     """~/venvs/fortress/bin/python of the normal lab user (it has the vici library)."""
     return ryu_manager().replace("venvs/ryu/bin/ryu-manager", "venvs/fortress/bin/python")
@@ -277,6 +286,85 @@ def vpn_up(net, lab):
     """True if the first VPN router has an ESTABLISHED IKE SA with an INSTALLED tunnel."""
     out = vpn_cmd(net, lab.vpn["ends"][0], "status")
     return "ESTABLISHED" in out and "INSTALLED" in out
+
+
+# --- Web/file server on srv3 (T18: something normal to talk to) -----------------------
+WWW = Path("/var/lib/fortress/www")
+
+
+def start_web(net, lab):
+    """A plain HTTP server on srv3: the destination for the baseline's web requests and file
+    downloads, and the target in the demo. Python's own http.server is enough and needs no
+    config; file.bin gives the baseline a transfer big enough to show up in bytes/s."""
+    srv = next((h for h in lab.hosts.values() if h["role"] == "web-file"), None)
+    if srv is None:
+        return
+    WWW.mkdir(parents=True, exist_ok=True)
+    (WWW / "index.html").write_text("<h1>Fortress-Net file server</h1>\n")
+    if not (WWW / "file.bin").exists():
+        (WWW / "file.bin").write_bytes(b"fortress" * 131072)      # 1 MiB
+    node_dirs(srv["name"])
+    pid = net[srv["name"]].cmd(f"python3 -m http.server 80 --bind {srv['ip']} --directory {WWW} "
+                               f"> {LOG / srv['name'] / 'http.log'} 2>&1 & echo $!").strip().splitlines()[-1]
+    (RUN / srv["name"] / "http.pid").write_text(pid + "\n")
+
+
+# --- Intrusion detection (T17) --------------------------------------------------------
+def start_ids(net, lab, timeout=60):
+    """Suricata on ids1, listening on both mirror ports (decisions D13, D30).
+
+    It runs inside ids1's namespace, so it only ever sees the mirrored copies, and writes
+    alerts to /var/log/fortress/ids1/eve.json, which the threat engine reads (T20).
+    Returns the seconds it took to report "engine started" (or the timeout).
+    """
+    ids = lab.ids["host"]
+    node_dirs(ids)
+    log = LOG / ids / "suricata.log"
+    log.unlink(missing_ok=True)          # so "engine started" below is from this run
+    net[ids].cmd(f"suricata -c {ETC / ids / 'suricata.yaml'} --af-packet -D "
+                 f"--pidfile {RUN / ids / 'suricata.pid'} > {LOG / ids / 'suricata-stdout.txt'} 2>&1")
+    start = time.time()
+    while time.time() - start < timeout:
+        if log.exists() and "engine started" in log.read_text():
+            return time.time() - start
+        time.sleep(0.5)
+    info(f"*** Suricata did not start within {timeout} s; see {log}\n")
+    return timeout
+
+
+def ids_alerts(lab, since=0.0):
+    """Suricata alerts from eve.json (detection/sources.py does the reading, T20)."""
+    return sources.ids_alerts(lab.ids["host"], since)
+
+
+# --- Feature collector (T18) ----------------------------------------------------------
+COLLECTOR_CSV = LOG / "collector" / "live.csv"
+COLLECTOR_LATEST = LOG / "collector" / "latest.json"
+
+
+def start_collector(net, lab, out=COLLECTOR_CSV, label="live", latest=None, seconds=0):
+    """detection/flow_collector.py inside ids1, listening on the same mirror ports as Suricata.
+
+    The always-on instance (label "live") keeps latest.json up to date for the threat engine
+    (T20); baseline_traffic.py starts a second one that writes the training CSV. Two sniffers
+    on one interface each get their own copy of every packet, so they don't disturb each other.
+    """
+    ids = lab.ids["host"]
+    node_dirs(ids)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    intfs = " ".join(f"{ids}-{c}" for c in lab.ids["attach_to"])
+    name = Path(out).stem
+    pid = net[ids].cmd(f"{fortress_python()} {ROOT / 'detection' / 'flow_collector.py'} "
+                       f"--interfaces {intfs} --out {out} --latest {latest or COLLECTOR_LATEST} "
+                       f"--label {label} --seconds {seconds} "
+                       f"> {LOG / ids / f'collector-{name}.log'} 2>&1 & echo $!").strip().splitlines()[-1]
+    (RUN / ids / f"collector-{name}.pid").write_text(pid + "\n")
+    return pid
+
+
+def latest_features(path=COLLECTOR_LATEST):
+    """The newest window the collector wrote (detection/sources.py does the reading)."""
+    return sources.latest_features(path)
 
 
 # --- SSH and central logging (T15) ----------------------------------------------------
@@ -348,6 +436,12 @@ def start(net, lab):
     info("*** SSH on routers and servers, central logging to srv2\n")
     start_ssh(net, lab)
     start_logging(net, lab)
+    info("*** Web/file server on srv3\n")
+    start_web(net, lab)
+    info("*** Suricata on ids1 (both core mirrors)\n")
+    info(f"*** IDS engine started after {start_ids(net, lab):.1f} s\n")
+    info("*** Traffic feature collector on ids1\n")
+    start_collector(net, lab)
 
 
 def stop(net=None, lab=None):

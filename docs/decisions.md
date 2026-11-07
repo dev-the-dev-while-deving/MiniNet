@@ -241,3 +241,24 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 - **`freshStartTail`:** without it the forwarders resent the full history of earlier runs at start-up (thousands of lines from r3 alone), and that burst briefly cut the Servers zone off. Now only new lines are sent.
 - **Tested:** admin1 SSHs into r1 and into srv1 (routed through r1); bar1 can't SSH into r1; a wrong-password attempt from admin1 appears in `srv2/remote/r1.log` as "Failed password for ubuntu from 192.168.99.10"; srv2 holds r3's and the controller's logs.
 - chrony as a lab NTP server (optional) is not done: every node shares the VM's clock, which chrony already keeps (D9), so all log timestamps already line up.
+
+## T17: Suricata on the mirror ports
+
+**D30. Mirror both cores; our own rules; the SID says what fired.**
+- **One OVS mirror per core** (`select_all=true`) with ids1's port on that core as the output. Naming a port as a mirror output also *reserves* it: OVS discards anything that arrives on it, so the IDS cannot inject traffic into the lab even though it hangs off a core switch. That is free port security for the one host that sees everything.
+- **Each packet can be mirrored up to four times** (ingress and egress on a core, and a packet may cross both cores). The collector removes the duplicates (D31). Suricata keeps them, so its counting rules fire at roughly half the stated number of packets; the thresholds are set with that in mind and it only makes detection earlier, never later.
+- **Our own five rules first** (`detection/suricata/local.rules`): a SYN sweep, NULL/FIN/Xmas probes, and an SSH connection-rate rule. They cover the two insider actions in scenario 3 and every one of them can be explained line by line in the viva. ET Open can be dropped in beside them as `et-open.rules` and the config picks it up, but thousands of signatures nobody on the team has read are not evidence of anything.
+- **The SID range identifies the kind of alert, not the category.** eve.json's `category` is the human-readable description from Suricata's classification file ("Attempted Information Leak"), not the rule's `classtype`. Our rules therefore use reserved local SIDs with meaning: 1000001–1000009 scans, 1000010–1000019 brute force, and `sources.ids_kind()` maps a SID to `scan` / `bruteforce` / `other`. The first version of the check matched on `category` and found nothing while 372 alerts sat in the file.
+- **The rules are copied to `/etc/fortress/ids1/rules/`** at start-up rather than read from the shared folder, so a half-saved edit on the Mac cannot take the IDS down mid-run.
+- **Measured:** a 200-port sweep from the Barracks attacker host produced 372 scan alerts, and Suricata reported "engine started" 0.5 s after launch.
+
+## T18: Traffic features and the baseline
+
+**D31. Six features per host per 5 seconds, each packet counted once.**
+- `detection/flow_collector.py` sniffs both mirror ports inside ids1 and summarises every host's behaviour each window: packets/s, bytes/s, new connections/s, **distinct destination ports**, distinct destination hosts, and **refused or unanswered connections**. The last two are what separate a sweep from a user.
+- **Counting each packet once** needs two rules: ignore a packet unless its VLAN tag is the *source's* own zone VLAN (so a routed packet isn't counted again on the far side, D13), and remember the packets already counted this window (so the mirror's duplicates don't inflate anything).
+- **srv3 runs a plain HTTP server** (`python3 -m http.server`, with a 1 MiB `file.bin`) so the baseline has something real to fetch, and the demo has a target.
+- **The baseline only uses pairs `fortress.yaml` allows.** Generating traffic the firewall drops would teach the model that blocked traffic is normal, which is exactly backwards.
+- **Two collector instances, one each way:** the always-on one keeps `latest.json` for the threat engine; `baseline_traffic.py` starts a second one that writes the training CSV with the label `normal`. Two sniffers on one interface each get their own copy of every packet.
+- **`detection/features.py` holds the feature list and nothing else,** because the collector and the model run in the fortress venv (scapy, scikit-learn) while the topology and its checks run on the system Python that Mininet lives in. The first version had the checks import the collector, which pulled in scapy and failed.
+- **Measured:** 25 s of baseline gave 43 clean rows across 13 hosts, with **at most 3 distinct destination ports** per host per window. The scan in the same run touched 200. That gap is what the model and the port-sweep rule are built on.

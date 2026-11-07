@@ -1,0 +1,29 @@
+# local.rules: Fortress-Net's own Suricata rules (T17).
+# These are the rules WE wrote, for the two insider actions in demo scenario 3: a port scan
+# and an SSH brute force. The ET Open ruleset (thousands of signatures) can be added on top
+# with scripts/update_suricata_rules.sh, but these are what the scenario needs and what we
+# can explain in the viva. SIDs 1000000+ are the range reserved for local rules.
+
+# --- Port scan: one source hitting many ports -------------------------------
+# A TCP SYN with no payload is a connection attempt. detection_filter fires once a source has
+# sent 30 of them to distinct destination ports within 10 s, i.e. it is sweeping ports.
+alert tcp any any -> $HOME_NET any (msg:"FORTRESS scan: TCP SYN sweep (possible nmap -sS)"; \
+  flow:not_established; flags:S,12; \
+  detection_filter:track by_src, count 30, seconds 10; \
+  classtype:attempted-recon; sid:1000001; rev:1;)
+
+# NULL / FIN / Xmas scans: unusual flag combinations nmap uses to probe quietly.
+alert tcp any any -> $HOME_NET any (msg:"FORTRESS scan: NULL scan"; flow:not_established; flags:0; \
+  detection_filter:track by_src, count 10, seconds 10; classtype:attempted-recon; sid:1000002; rev:1;)
+alert tcp any any -> $HOME_NET any (msg:"FORTRESS scan: FIN scan"; flow:not_established; flags:F,12; \
+  detection_filter:track by_src, count 10, seconds 10; classtype:attempted-recon; sid:1000003; rev:1;)
+alert tcp any any -> $HOME_NET any (msg:"FORTRESS scan: Xmas scan"; flow:not_established; flags:FPU,12; \
+  detection_filter:track by_src, count 10, seconds 10; classtype:attempted-recon; sid:1000004; rev:1;)
+
+# --- SSH brute force: many new SSH connections from one source --------------
+# Each failed password try is its own TCP connection to port 22. 5 new SSH connections from
+# one source within 20 s is the signature of a password-guessing tool (hydra, or a script).
+alert tcp any any -> $HOME_NET 22 (msg:"FORTRESS brute force: repeated SSH connections (possible hydra)"; \
+  flow:to_server; flags:S,12; \
+  detection_filter:track by_src, count 5, seconds 20; \
+  classtype:attempted-admin; sid:1000010; rev:1;)

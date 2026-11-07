@@ -6,9 +6,13 @@ the number of failures. fortress_topo.py runs it after start-up (and exits with 
 --check mode); start_all.sh shows it before opening the CLI.
 """
 import re
+import sys
 import time
+from pathlib import Path
 
 from mininet.log import output
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "detection"))
 
 
 class Results:
@@ -645,6 +649,104 @@ def check_ssh_logging(net, lab, r):
         r.check(n.isdigit() and int(n) > 0, f"{syslog} collects {sender}'s logs", f"{n} lines in {remote}/{sender}.log")
 
 
+# --- T17: Suricata on the mirror ports ----------------------------------------------
+def check_ids(net, lab, r):
+    """Suricata is running on ids1 and the core mirrors are feeding it traffic."""
+    import services
+    output("== Suricata on ids1 (mirror of both cores)\n")
+    ids = lab.ids["host"]
+    pid = (services.RUN / ids / "suricata.pid")
+    alive = False
+    if pid.exists():
+        alive = net[ids].cmd(f"kill -0 {pid.read_text().strip()} 2>&1 || echo dead").strip() == ""
+    r.check(alive, "Suricata is running inside ids1", f"pid {pid.read_text().strip() if pid.exists() else 'none'}")
+    for c in lab.ids["attach_to"]:
+        mirrors = net[c].cmd(f"ovs-vsctl get bridge {c} mirrors").strip()
+        stats = net[c].cmd(f"ovs-vsctl --columns=statistics list mirror fortress-{c}")
+        m = re.search(r"tx_packets=(\d+)", stats)
+        copied = int(m.group(1)) if m else 0
+        r.check(mirrors not in ("", "[]") and copied > 0, f"{c} mirrors its traffic to {ids}-{c}",
+                f"{copied} packets copied so far")
+    eve = services.LOG / ids / "eve.json"
+    r.check(eve.exists(), f"Suricata writes {eve.name} (the threat engine's input, T20)",
+            f"{len(services.ids_alerts(lab))} alerts so far")
+
+
+def check_scan_detection(net, lab, r):
+    """Disruptive (--check only), scenario 3's first half: the Barracks attacker host sweeps
+    ports on a server, and Suricata's own scan rule fires on the mirrored traffic.
+
+    This runs entirely inside the Mininet namespaces, against one lab host (the project rule:
+    attack tools never leave the lab).
+    """
+    import services
+    output("== Scan detection (attacker sweeps ports on a server)\n")
+    attacker = next(h for h in lab.hosts.values() if h["role"] == "attacker")
+    target = next(h for h in lab.hosts.values() if h["role"] == "web-file")
+    t0 = time.time() - 1
+    out = net[attacker["name"]].cmd(f"nmap -sS -Pn -n --max-retries 1 -p 1-200 {target['ip']}")
+    r.check("Nmap done" in out, f"{attacker['name']} swept ports 1-200 on {target['name']}",
+            f"{target['ip']} (inside the lab only)")
+    alerts = []
+    for _ in range(20):
+        alerts = [a for a in services.ids_alerts(lab, since=t0) if a["src_ip"] == attacker["ip"]]
+        if alerts:
+            break
+        time.sleep(1)
+    scan = [a for a in alerts if a["kind"] == "scan"]
+    first = scan[0] if scan else None
+    r.check(bool(scan), f"Suricata raised a scan alert for {attacker['name']}",
+            f'"{first["signature"]}" (sid {first["sid"]}), {len(scan)} alerts' if first
+            else f"{len(alerts)} alerts from {attacker['ip']} in eve.json")
+
+
+# --- T18: traffic features and baseline ---------------------------------------------
+def check_features(net, lab, r):
+    """The collector on ids1 is turning mirrored packets into per-host features."""
+    import services
+    output("== Traffic feature collector on ids1\n")
+    latest = services.latest_features()
+    age = time.time() - latest["time"]
+    r.check(latest["time"] > 0 and age < 40, "collector wrote a recent window",
+            f"{age:.0f} s ago, {round(latest['window'], 1)} s window")
+    hosts = latest.get("hosts", [])
+    r.check(bool(hosts), "features for the hosts that sent traffic",
+            " ".join(sorted(h["host"] for h in hosts)) or "no host sent anything this window")
+    if hosts:
+        from features import FEATURES
+        bad = [f for f in FEATURES for h in hosts if not isinstance(h.get(f), (int, float))]
+        r.check(not bad, "every feature is a number (no gaps for the model to trip over)",
+                f"{len(FEATURES)} features x {len(hosts)} hosts" if not bad else f"missing: {set(bad)}")
+
+
+def check_baseline(net, lab, r, seconds=25):
+    """Disruptive (--check only): a short baseline run, to prove the generator and the collector
+    work end to end. The real training run is detection/baseline_traffic.py --minutes 30."""
+    import baseline_traffic
+    import services
+    output(f"== Baseline traffic ({seconds} s sample; the real run is 30 minutes)\n")
+    csv_file = services.LOG / "collector" / "baseline-check.csv"
+    csv_file.unlink(missing_ok=True)
+    services.start_collector(net, lab, csv_file, label="normal",
+                             latest=csv_file.with_name("baseline-check-latest.json"))
+    actions = baseline_traffic.run(net, lab, seconds)
+    time.sleep(7)                       # let the last window close and be written
+    r.check(actions > 0, "normal traffic generated across the allowed zone pairs",
+            f"{actions} actions (pings, DNS, web, file, admin SSH)")
+    import csv as csvmod
+    rows = list(csvmod.DictReader(open(csv_file))) if csv_file.exists() else []
+    from features import FEATURES
+    gaps = [f for f in FEATURES for row in rows if row[f] in ("", None)]
+    r.check(len(rows) >= 5 and not gaps, "the feature CSV is clean (no missing values)",
+            f"{len(rows)} rows, {len({row['host'] for row in rows})} hosts" + (f", gaps in {set(gaps)}" if gaps else ""))
+    # Normal users touch a handful of ports. This is the number a port sweep blows up, so it
+    # is worth recording what "normal" looks like before the attack scenario runs.
+    if rows:
+        ports = [float(row["distinct_dst_ports"]) for row in rows]
+        r.check(max(ports) <= 20, "normal hosts touch few ports (what makes a sweep stand out)",
+                f"max {max(ports):.0f} distinct ports per 5 s window, mean {sum(ports) / len(ports):.1f}")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -668,6 +770,8 @@ def run_all(net, lab, args):
     check_vpn(net, lab, r)
     if "management" in lab.zones:
         check_ssh_logging(net, lab, r)
+    check_ids(net, lab, r)
+    check_features(net, lab, r)
     if not args.standalone:
         check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
@@ -682,5 +786,7 @@ def run_all(net, lab, args):
             if "barracks" in lab.zones:
                 check_qos(net, lab, r)
                 check_rogue(net, lab, r)
+                check_baseline(net, lab, r)
+                check_scan_detection(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed
