@@ -263,7 +263,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T00 Project context file
 - [x] T01 Repository scaffold
 - [x] T02 Setup script
-- [~] T02b Architecture decisions (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [x] T02b Architecture decisions
 - [ ] T03 Topology
 - [ ] T04 DHCP and DNS
 - [ ] T05 Routing with FRR

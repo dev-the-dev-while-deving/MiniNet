@@ -109,6 +109,9 @@ def check(cfg):
     for r in cfg["vpn"]["ends"]:
         if r not in routers:
             errors.append(f"vpn: unknown router {r}")
+    for sw in cfg["ids"]["attach_to"]:
+        if sw not in cfg["switches"]["core"]:
+            errors.append(f"ids: attach_to {sw} is not a core switch")
     for r, info in cfg["routers"].items():
         if "trunk_to" in info and info["trunk_to"] not in cfg["switches"]["core"]:
             errors.append(f"router {r}: trunk_to {info['trunk_to']} is not a core switch")

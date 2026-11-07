@@ -161,7 +161,9 @@ vpn:
   remote_subnets: [172.16.70.0/24]
 
 # --- Detection -------------------------------------------------------------
-# ids1 has no IP address: it only listens on a mirror port of the core switches (T17).
+# ids1 has no IP address: it only listens on mirror ports (T17). An OVS mirror can only
+# output to a port on the same bridge, and traffic may cross either core, so ids1 gets one
+# interface on each core (docs/decisions.md D13).
 ids:
   host: ids1
-  attach_to: c1
+  attach_to: [c1, c2]

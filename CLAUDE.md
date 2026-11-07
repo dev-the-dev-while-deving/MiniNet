@@ -47,7 +47,7 @@ GitHub (`dev-the-dev-while-deving/MiniNet`, branch `main`) is the shared state. 
 | 5. Detection | Suricata on a mirror port + scikit-learn Isolation Forest |
 | 6. Command layer | Prometheus + Grafana, Telegram alerts |
 
-Optional: chrony, Ansible, threat-aware rerouting (T22).
+Optional: chrony (lab NTP server), threat-aware rerouting (T22). Ansible is dropped (D15).
 
 ## Rules
 - `config/fortress.yaml` (created in T01) is the single source of truth for zones, VLANs, subnets, VIPs, host names and router links. Never hard-code addresses in scripts.
@@ -63,7 +63,7 @@ Optional: chrony, Ansible, threat-aware rerouting (T22).
 - **Core:** c1, c2 (OVS), joined by an LACP bond (T10).
 - **Access:** s1–s5, one per zone plus one for the servers, each uplinked to both cores, which makes loops (RSTP or the controller's spanning tree handles them).
 - **Routers** (Mininet hosts with IP forwarding): r1, r2 are zone gateways (VRRP, OSPF, NAT, VPN), r3 is the FOB and r4 is the simulated ISP/internet.
-- **Servers:** srv1 DHCP/DNS (domain `fortress.mil`), srv2 syslog (+ optional NTP), srv3 web/file target; ids1 runs Suricata on a mirror port.
+- **Servers:** srv1 DHCP/DNS (domain `fortress.mil`), srv2 syslog (+ optional NTP), srv3 web/file target; ids1 runs Suricata on mirror ports of both cores (no IP).
 - **Zone hosts:** 2–3 per zone (normal users plus an attacker in Barracks).
 
 ## IP plan
@@ -84,14 +84,20 @@ Optional: chrony, Ansible, threat-aware rerouting (T22).
 ## Threat scoring (T20)
 Score 0–100 = Isolation Forest anomaly + rules: Suricata alert +30, >50 ports probed +30, repeated failed SSH logins +25, scan then login attempts from the same host +15. Bands: 0–39 Normal (log), 40–69 Suspicious (dashboard), 70–100 Breach (Telegram alert + automatic block through the controller's REST API). Every score keeps its list of reasons.
 
-## Architecture decisions
-Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, don't write network code that depends on them (VLAN handling under the controller, standalone/RSTP mode before T08, what runs in which namespace, where ML features come from, controller module layout, Ansible vs Jinja2).
+## Architecture decisions (T02b; full reasoning in `docs/decisions.md` D10–D15)
+Follow these in every network task. If one turns out wrong, change `docs/decisions.md` first, then the code.
+- **VLANs (D10):** OVS port tags only work in `NORMAL` mode. Under the controller, `controller/vlan.py` pushes the 802.1Q tag on ingress at access ports (VLAN map from `fortress.yaml`), keeps it across the cores and pops it at the egress access port. r1/r2 trunk ports stay tagged, with sub-interfaces like `r1-eth0.10`.
+- **Before the controller, T03–T07 (D11):** `fortress_topo.py --standalone` sets `fail_mode=standalone` + `rstp_enable=true` on every bridge (the dual uplinks make loops) and uses OVS port tags. From T08, `fail_mode=secure`, OpenFlow 1.3, RSTP off.
+- **What runs where (D12):** Mininet hosts get their own network namespace but share the filesystem, process list and `/dev/log`, so every per-node daemon gets its own config, PID, socket and log path. FRR uses `-N <router>` (`vtysh -N r1`). Rendered configs go in `/etc/fortress/<node>/`, logs in `/var/log/fortress/<node>/`, runtime files in `/var/run/fortress/<node>/`, all on the VM's disk, never the shared folder. Ryu, the threat engine, Prometheus and Grafana run in the VM root namespace. Per-router iptables always run inside that router (`r1.cmd(...)`). Central logs: daemons log to files and a per-node rsyslog forwarder sends them to srv2:514 over the lab network. Monitoring host `mon0` (root namespace, 192.168.99.250 on VLAN 99, added in T03) lets Prometheus reach the lab.
+- **ML features (D13):** come from packets on ids1's mirror ports (ids1 has one interface on c1 and one on c2), in 5 s windows, counted only on the source host's VLAN so routed packets aren't counted twice. Suricata `eve.json` is the second signal. Ryu flow stats only feed the dashboard.
+- **Controller (D14):** one Ryu app, `controller/fortress_ctrl.py`, run with `~/venvs/ryu/bin/ryu-manager --observe-links`, calling plain modules `topology.py`, `paths.py`, `vlan.py`, `policy.py`, `qos.py`, `response.py`, `rest_api.py`. The block API lives in `rest_api.py` (no separate `block_api.py`).
+- **Configs (D15):** Jinja2 templates in `configs/<service>/*.j2`, rendered per node from `fortress.yaml` by `scripts/render_configs.py`. No Ansible; skip the roadmap's Ansible items.
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`).
-- In progress: T02b (dev-the-dev-while-deving).
-- Next free: T02b (architecture decisions), then T03.
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15).
+- In progress: none.
+- Next free: T03 (topology).
 
 ## Running the lab (from the Mac)
 These scripts don't exist yet; the task that creates each one is in brackets.
