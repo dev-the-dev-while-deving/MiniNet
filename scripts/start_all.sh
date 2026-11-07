@@ -3,6 +3,7 @@
 # Run from the Mac:  ./scripts/vm/vm.sh sudo ./scripts/start_all.sh [--small] [--check]
 #   --small  3 zones and fewer hosts, for 4 GB laptops
 #   --check  run the health checks plus the disruptive failover test, then stop (no CLI)
+#   --standalone  no controller: switches act as learning switches with RSTP (the T03-T07 setup)
 #
 # Order (each step needs the ones before it):
 #   1. clean slate (stop_all.sh), VM clock, fortress.yaml check
@@ -10,7 +11,7 @@
 #   3. services: FRR (OSPF + VRRP) and NAT, then DHCP/DNS        (topology/services.py)
 #   4. health check, then the Mininet CLI                         (topology/checks.py)
 # Leave the CLI with "exit" to stop everything; stop_all.sh cleans up after a crash.
-# Until the controller exists (T08) the switches run standalone with RSTP.
+# The switches run under the Ryu controller (T08); add --standalone for plain switches + RSTP.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,4 +32,4 @@ echo "==> Checking config/fortress.yaml"
 python3 scripts/check_config.py
 
 echo "==> Starting the lab"
-exec python3 topology/fortress_topo.py --standalone "$@"
+exec python3 topology/fortress_topo.py "$@"

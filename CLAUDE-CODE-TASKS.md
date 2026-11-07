@@ -269,8 +269,8 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T05 Routing with FRR
 - [x] T06 Gateway redundancy (VRRP)
 - [x] T07 Lab start/stop
-- [~] T08 Ryu controller, base (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [ ] T09 Reactive rerouting
+- [x] T08 Ryu controller, base
+- [~] T09 Reactive rerouting (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T09b Early measurement tool
 - [ ] T10 LACP bond
 - [ ] T11 ⭐ Proactive fast-failover

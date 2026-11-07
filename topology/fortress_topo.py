@@ -104,13 +104,12 @@ class FortressNet:
         if not args.standalone:
             net.addController("ryu", controller=RemoteController, ip=args.controller_ip, port=OF_PORT)
 
-        # Switches: 0x1xx cores, 0x2xx access, 0x3xx FOB.
-        for i, s in enumerate(lab.core_switches, 1):
-            net.addSwitch(s, dpid=dpid(0x100 + i), failMode=base_mode, protocols="OpenFlow13")
-        for i, s in enumerate(lab.access_switches, 1):
-            net.addSwitch(s, dpid=dpid(0x200 + i), failMode=base_mode, protocols="OpenFlow13")
+        # Switches, with the datapath IDs from labconfig (0x1xx cores, 0x2xx access, 0x301 FOB).
+        ids = lab.dpids()
+        for s in lab.core_switches + lab.access_switches:
+            net.addSwitch(s, dpid=dpid(ids[s]), failMode=base_mode, protocols="OpenFlow13")
         # The FOB LAN switch sits outside the base's SDN domain: always a plain learning switch.
-        net.addSwitch(lab.fob_switch, dpid=dpid(0x301), failMode="standalone", protocols="OpenFlow13")
+        net.addSwitch(lab.fob_switch, dpid=dpid(ids[lab.fob_switch]), failMode="standalone", protocols="OpenFlow13")
 
         c1, c2 = lab.core_switches
         # Core-to-core trunk (T10 turns this into an LACP bond).
@@ -280,6 +279,8 @@ class FortressNet:
         self.build()
         self.net.build()
         self.net.start()
+        # s6 (FOB LAN) stays out of the SDN domain: no controller, plain learning switch.
+        self.net[self.lab.fob_switch].vsctl("del-controller", self.lab.fob_switch)
         self.configure_switches()
         self.configure_routers()
         self.configure_monitor()
@@ -328,11 +329,21 @@ def main():
         print(f"cleanup: stopped lab daemons, removed {len(removed)} leftover interfaces")
         return
     fnet = FortressNet(lab, args)
+    if not args.standalone:
+        info("*** Starting the SDN controller (Ryu + controller/fortress_ctrl.py)\n")
+        try:
+            services.start_controller()
+        except RuntimeError as e:
+            services.stop()
+            sys.exit(f"*** {e}")
     net = fnet.start()
     try:
         if args.standalone:
             info("*** Waiting for RSTP to converge\n")
             info(f"*** RSTP converged in {fnet.wait_for_rstp():.1f} s\n")
+        else:
+            info("*** Waiting for the controller to see every switch and link\n")
+            info(f"*** Controller ready in {services.wait_for_controller(lab):.1f} s\n")
         services.start(net, lab)
         failures = checks.run_all(net, lab, args)
         if not args.check:

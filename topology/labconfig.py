@@ -128,6 +128,16 @@ class Lab:
         self.access_switches = [s for s in sw["access"] if s in used]
         self.fob_switch = sw["fob"]
 
+    def dpids(self):
+        """{switch name: OpenFlow datapath ID}. Set explicitly (decisions D16): Mininet would
+        otherwise take the digits from the name and c1 and s1 would both be datapath 1.
+        Cores 0x101.., access 0x201.., FOB 0x301. The controller uses the same table to know
+        which switch is which."""
+        ids = {s: 0x100 + i for i, s in enumerate(self.cfg["switches"]["core"], 1)}
+        ids.update({s: 0x200 + i for i, s in enumerate(self.cfg["switches"]["access"], 1)})
+        ids[self.cfg["switches"]["fob"]] = 0x301
+        return ids
+
     def _add_host(self, name, zone, h, net, gateway, switch, vlan, dhcp):
         self.hosts[name] = {
             "name": name, "zone": zone, "ip": h["ip"], "prefixlen": net.prefixlen,

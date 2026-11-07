@@ -304,12 +304,40 @@ def check_vrrp_failover(net, lab, r):
         r.bad("pings to the gateway lost during failover", "(no ping summary)")
 
 
+# --- T08: controller ------------------------------------------------------------
+def check_controller(net, lab, r):
+    """The controller sees every base switch and every switch link, and the switches really
+    are in secure mode under it (so it is the controller that forwards, not OVS)."""
+    import services
+    output("== SDN controller\n")
+    s = services.controller_status() or {}
+    want = sorted(lab.core_switches + lab.access_switches)
+    r.check(s.get("switches") == want, "every base switch is connected", " ".join(s.get("switches", [])) or "none")
+    want_links = 1 + 2 * len(lab.access_switches)
+    r.check(len(s.get("links", [])) >= want_links, "LLDP found every switch link",
+            f"{len(s.get('links', []))} of {want_links}")
+    modes = {sw: net[sw].vsctl("get-fail-mode", sw).strip() for sw in want}
+    r.check(all(m == "secure" for m in modes.values()), "base switches are in secure mode (controller-only)",
+            "" if all(m == "secure" for m in modes.values()) else str(modes))
+
+
+def check_controller_flows(net, lab, r):
+    """After the other checks ran traffic, the controller has learned hosts and installed rules."""
+    import services
+    output("== SDN controller rules\n")
+    s = services.controller_status() or {}
+    r.check(s.get("installed", 0) > 0, "controller installed forwarding rules",
+            f"{s.get('installed', 0)} destinations, {len(s.get('hosts', []))} hosts learned")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
     output("\n*** Fortress-Net health checks\n")
     if args.standalone:
         check_rstp(net, lab, r)
+    else:
+        check_controller(net, lab, r)
     check_same_zone(net, lab, r)
     check_vlan_isolation(net, lab, r)
     check_no_storm(net, lab, r)
@@ -321,6 +349,8 @@ def run_all(net, lab, args):
     check_backup_route(net, lab, r)
     check_nat(net, lab, r)
     check_vrrp(net, lab, r)
+    if not args.standalone:
+        check_controller_flows(net, lab, r)
     if args.check:
         # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
         check_vrrp_failover(net, lab, r)

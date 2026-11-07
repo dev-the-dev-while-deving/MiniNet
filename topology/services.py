@@ -31,6 +31,64 @@ def node_dirs(node, owner=None):
             shutil.chown(d, user=owner)
 
 
+# --- SDN controller (T08) ------------------------------------------------------------
+CTRL_APP = ROOT / "controller" / "fortress_ctrl.py"
+REST = "http://127.0.0.1:8080/fortress"
+
+
+def ryu_manager():
+    """~/venvs/ryu/bin/ryu-manager of the normal lab user (we run as root under sudo)."""
+    import pwd
+    home = pwd.getpwnam(os.environ.get("SUDO_USER") or "ubuntu").pw_dir
+    return f"{home}/venvs/ryu/bin/ryu-manager"
+
+
+def controller_status():
+    """The controller's /fortress/status as a dict, or None if it isn't answering."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{REST}/status", timeout=2) as r:
+            return json.loads(r.read())
+    except OSError:
+        return None
+
+
+def start_controller(mode="reactive", timeout=30):
+    """Start Ryu with our app in the VM's root namespace (it talks to OVS over 127.0.0.1:6653
+    and serves its REST API on :8080), then wait until the REST API answers."""
+    import subprocess
+    node_dirs("ryu")
+    log = open(LOG / "ryu" / "ryu.log", "w")
+    env = {**os.environ, "FORTRESS_MODE": mode, "OPENSSL_armcap": "0"}
+    proc = subprocess.Popen([ryu_manager(), "--observe-links", "--ofp-tcp-listen-port", "6653",
+                             "--wsapi-port", "8080", str(CTRL_APP)],
+                            stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+    (RUN / "ryu" / "ryu.pid").write_text(f"{proc.pid}\n")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"the controller exited; see {LOG / 'ryu' / 'ryu.log'}")
+        if controller_status() is not None:
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"the controller did not answer within {timeout} s")
+
+
+def wait_for_controller(lab, timeout=40):
+    """Wait until every base switch is connected and LLDP has found every switch link
+    (one core-to-core link plus two uplinks per access switch). Returns the seconds taken."""
+    want_switches = set(lab.core_switches + lab.access_switches)
+    want_links = 1 + 2 * len(lab.access_switches)
+    start = time.time()
+    while time.time() - start < timeout:
+        s = controller_status() or {}
+        if set(s.get("switches", [])) == want_switches and len(s.get("links", [])) >= want_links:
+            return time.time() - start
+        time.sleep(0.5)
+    return timeout
+
+
 # --- DHCP and DNS (T04) ------------------------------------------------------------
 def start_dhcp_server(net, lab):
     """dnsmasq on srv1, with the config rendered from fortress.yaml."""
