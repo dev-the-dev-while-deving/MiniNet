@@ -1,0 +1,29 @@
+# strongswan.conf for {{ router }}'s IPsec daemon (charon-systemd), loaded via STRONGSWAN_CONF.
+# GENERATED from config/fortress.yaml by topology/render_configs.py (configs/strongswan/strongswan.conf.j2).
+# Each VPN router runs its own daemon inside its own namespace, so everything that would be
+# shared on one VM gets a per-router path: control socket and log (decisions D12, D28).
+charon-systemd {
+  # OSPF already routes the FOB subnets; strongSwan must not add routes of its own.
+  install_routes = no
+  # Give up on a silent peer within about 3 s instead of minutes (default: 5 tries over ~165 s),
+  # so when r1 dies, r3 drops the tunnel and traffic can use the backup path via r2 (D28).
+  retransmit_tries = 2
+  retransmit_timeout = 0.5
+  retransmit_base = 1.5
+  plugins {
+    vici {
+      socket = unix://{{ run_dir }}/charon.vici
+    }
+  }
+  journal {
+    default = -1
+  }
+  filelog {
+    fortress {
+      path = {{ log_dir }}/charon.log
+      time_format = %b %e %T
+      default = 1
+      ike = 2
+    }
+  }
+}

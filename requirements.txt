@@ -12,3 +12,4 @@ flask             # small REST endpoints (block API, exporter helpers)
 requests          # threat engine -> controller REST calls, Telegram
 prometheus-client # exporter metrics
 matplotlib        # charts for the chaos-test results
+vici              # strongSwan control protocol: loads the VPN tunnel (swanctl is AppArmor-limited, D28)

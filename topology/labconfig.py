@@ -160,6 +160,22 @@ class Lab:
         return [(a, b) for a in names for b in names
                 if a != b and not self.may_start(a, b) and not self.may_start(b, a)]
 
+    def ssh_nodes(self):
+        """[(node, address sshd listens on)]: r1/r2 on their Management-VLAN address, the
+        servers on their own address (T15). Admins reach them only from the Management VLAN."""
+        nodes = [(r, self.zone_ip(r, "management")) for r in self.gateway_routers() if "management" in self.zones]
+        nodes += [(h, v["ip"]) for h, v in self.zones["servers"]["hosts"].items()] if "servers" in self.zones else []
+        return nodes
+
+    def log_senders(self):
+        """Nodes that forward their logs to the syslog server (T15): our routers (not r4, the
+        simulated ISP, which isn't base equipment), every server except the syslog server
+        itself, and the controller ("controller", in the VM's root namespace)."""
+        syslog = self.host_with_role("syslog")["name"]
+        nodes = [r for r, i in self.routers.items() if i["role"] != "isp"]
+        nodes += [h for h in self.zones["servers"]["hosts"] if h != syslog]
+        return nodes + ["controller"]
+
     def gateway_routers(self):
         """The routers that act as zone gateways (r1 and r2)."""
         return [r for r, info in self.routers.items() if info["role"] == "gateway"]

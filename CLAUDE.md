@@ -95,16 +95,16 @@ Follow these in every network task. If one turns out wrong, change `docs/decisio
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`), T10 (c1-c2 aggregation via select groups, not an OVS bond; D24), T11 (`--mode proactive`: fast-failover groups; D25), T12 (HTB queues + controller set_queue; D26), T13 (controller drops never-talk pairs, r1/r2 stateful firewall, port security, rogue DHCP; D27). Tags: `v0.1-base`, `v0.2-routing`.
-- In progress: Part B + C (T08–T15, dev-the-dev-while-deving), one at a time.
-- Next free: T08 (Ryu controller, base).
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`), T10 (c1-c2 aggregation via select groups, not an OVS bond; D24), T11 (`--mode proactive`: fast-failover groups; D25), T12 (HTB queues + controller set_queue; D26), T13 (controller drops never-talk pairs, r1/r2 stateful firewall, port security, rogue DHCP; D27), T14 (strongSwan r1<->r3 via VICI; D28), T15 (sshd per node, Management-only; rsyslog to srv2; D29). Tags: `v0.1-base`, `v0.2-routing`, `v0.3-selfheal`, `v0.4-security`.
+- In progress: none.
+- Next free: T17 (Suricata on the mirror ports).
 
 ## Running the lab (from the Mac)
 - Start: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh [--small] [--standalone]`: clean slate, clock, config check, Ryu controller (unless `--standalone`), topology, FRR (OSPF + VRRP), NAT, DHCP/DNS, health check, then the Mininet CLI. `exit` in the CLI stops everything.
 - Automated test: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check`: same start, plus the disruptive VRRP failover test, then stop. Exit code = number of failed checks.
 - Stop / clean up after a crash: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`. It runs `mn -c` and prints ✅ for no lab processes, no OVS bridges, no lab interfaces.
 - Controller: log `/var/log/fortress/ryu/ryu.log`, status `curl -s localhost:8080/fortress/status` (in the VM), flows `sudo ovs-ofctl -O OpenFlow13 dump-flows s1`.
-- In the CLI: `fail r1` / `recover r1` simulate a power loss; `r1 vtysh -N r1 -c "show ip ospf neighbor"`; `cmd1 ping 172.16.70.10`.
+- In the CLI: `fail r1` / `recover r1` simulate a power loss; `admin1 ssh -i /etc/fortress/ssh/admin_key ubuntu@192.168.99.2` (admin SSH to r1); central logs in `/var/log/fortress/srv2/remote/`; `r1 vtysh -N r1 -c "show ip ospf neighbor"`; `cmd1 ping 172.16.70.10`.
 - The pieces: `topology/fortress_topo.py` (build), `topology/services.py` (daemons per node), `topology/render_configs.py` (templates in `configs/` → `/etc/fortress/<node>/`, `/etc/frr/<router>/`), `topology/checks.py` (health checks), `topology/labconfig.py` (values derived from `fortress.yaml`).
 - Gotcha: `mn -c` deletes `/tmp/*.log` and `/tmp/*.out`. Never log lab runs to those names.
 - Gotcha: `pkill -f <pattern>` run through `vm.sh` matches the wrapper shell's own command line and kills it. Write the pattern as `[t]opology/...`.

@@ -238,6 +238,92 @@ def recover_node(net, name):
     return names
 
 
+# --- IPsec VPN to the FOB (T14) -------------------------------------------------------
+def fortress_python():
+    """~/venvs/fortress/bin/python of the normal lab user (it has the vici library)."""
+    return ryu_manager().replace("venvs/ryu/bin/ryu-manager", "venvs/fortress/bin/python")
+
+
+def vpn_cmd(net, router, args):
+    """Run topology/vpn.py inside a router's namespace against that router's VICI socket."""
+    return net[router].cmd(f"{fortress_python()} {ROOT / 'topology' / 'vpn.py'} {args.split()[0]} "
+                           f"{RUN / router / 'charon.vici'} {' '.join(args.split()[1:])}")
+
+
+def start_vpn(net, lab, timeout=20):
+    """strongSwan on both VPN routers: one charon-systemd daemon per router namespace, with
+    its own config (STRONGSWAN_CONF) and control socket, then load the tunnel over VICI\n    (topology/vpn.py, decisions D28) and wait until
+    the IPsec SA is up. Returns the seconds it took (or the timeout)."""
+    for r in lab.vpn["ends"]:
+        node_dirs(r)
+        pid = net[r].cmd(f"STRONGSWAN_CONF={ETC / r / 'strongswan.conf'} /usr/sbin/charon-systemd "
+                         f"> {LOG / r / 'charon-stdout.txt'} 2>&1 & echo $!").strip().splitlines()[-1]
+        (RUN / r / "charon.pid").write_text(pid + "\n")
+    start = time.time()
+    for r in lab.vpn["ends"]:
+        while not (RUN / r / "charon.vici").exists() and time.time() - start < timeout:
+            time.sleep(0.2)
+        out = vpn_cmd(net, r, f"load {ETC / r / 'vpn.json'}")
+        if "loaded" not in out:
+            info(f"*** loading the VPN on {r} failed: {out.strip()[-300:]}\n")
+    while time.time() - start < timeout:
+        if vpn_up(net, lab):
+            return time.time() - start
+        time.sleep(0.5)
+    return timeout
+
+
+def vpn_up(net, lab):
+    """True if the first VPN router has an ESTABLISHED IKE SA with an INSTALLED tunnel."""
+    out = vpn_cmd(net, lab.vpn["ends"][0], "status")
+    return "ESTABLISHED" in out and "INSTALLED" in out
+
+
+# --- SSH and central logging (T15) ----------------------------------------------------
+SSH_DIR = ETC / "ssh"
+
+
+def ensure_key(path):
+    """Make an ed25519 key pair if it doesn't exist yet. Keys live on the VM's disk only."""
+    import subprocess
+    if not Path(path).exists():
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", Path(path).name, "-f", str(path)],
+                       check=True)
+
+
+def start_ssh(net, lab):
+    """One sshd per SSH node, inside its namespace, with its own host key and log file, plus
+    the servers' SSH input rules. Admins log in with the lab's admin key (made once per VM,
+    never committed): /etc/fortress/ssh/admin_key."""
+    SSH_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_key(SSH_DIR / "admin_key")
+    (SSH_DIR / "authorized_keys").write_text((SSH_DIR / "admin_key.pub").read_text())
+    (SSH_DIR / "authorized_keys").chmod(0o644)
+    for node, _ in lab.ssh_nodes():
+        node_dirs(node)
+        ensure_key(ETC / node / "ssh_host_ed25519_key")
+        out = net[node].cmd(f"/usr/sbin/sshd -f {ETC / node / 'sshd_config'} -E {LOG / node / 'sshd.log'}")
+        if out.strip():
+            info(f"*** sshd on {node}: {out.strip()}\n")
+        if (ETC / node / "input.rules").exists():
+            net[node].cmd(f"iptables-restore < {ETC / node / 'input.rules'}")
+
+
+def start_logging(net, lab):
+    """The rsyslog server on srv2, then a forwarder in every sending node (the controller's
+    runs in the VM's root namespace and reaches srv2 through mon0)."""
+    import subprocess
+    srv = lab.host_with_role("syslog")["name"]
+    for node in [srv] + lab.log_senders():
+        node_dirs(node)
+        (RUN / node / "rsyslog").mkdir(exist_ok=True)
+        cmd = f"rsyslogd -f {ETC / node / 'rsyslog.conf'} -i {RUN / node / 'rsyslogd.pid'}"
+        if node == "controller":
+            subprocess.run(cmd.split(), capture_output=True)
+        else:
+            net[node].cmd(cmd)
+
+
 # --- Start and stop ---------------------------------------------------------------
 def start(net, lab):
     """Bring every service up, in order. Each step depends on the ones before it."""
@@ -257,6 +343,11 @@ def start(net, lab):
     if missing:
         info(f"*** No DHCP lease for: {', '.join(missing)}\n")
     info(f"*** OSPF converged in {wait_for_ospf(net, lab):.1f} s\n")
+    info("*** IPsec VPN r1 <-> r3 (strongSwan)\n")
+    info(f"*** VPN up after {start_vpn(net, lab):.1f} s\n")
+    info("*** SSH on routers and servers, central logging to srv2\n")
+    start_ssh(net, lab)
+    start_logging(net, lab)
 
 
 def stop(net=None, lab=None):

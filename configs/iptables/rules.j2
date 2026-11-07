@@ -22,6 +22,14 @@ COMMIT
 # Shared service every zone may use: DNS on {{ dns }}.
 -A FORWARD -d {{ dns }} -p udp --dport 53 -j ACCEPT
 -A FORWARD -d {{ dns }} -p tcp --dport 53 -j ACCEPT
+{% if mgmt %}
+# SSH to {{ router }} itself only from the Management VLAN (T15).
+-A INPUT -p tcp --dport 22 ! -s {{ mgmt }} -j DROP
+# Admins on the Management VLAN may SSH to the servers (T15).
+-A FORWARD -s {{ mgmt }} -p tcp --dport 22 -j ACCEPT
+{% endif %}
+# Every lab node may send its logs to the central syslog server {{ syslog }} (T15).
+-A FORWARD -d {{ syslog }} -p udp --dport 514 -j ACCEPT
 # The monitoring host may reach everything (and everything may answer it).
 -A FORWARD -s {{ monitor }} -j ACCEPT
 {% for r in allow %}

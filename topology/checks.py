@@ -570,6 +570,81 @@ def check_rogue(net, lab, r):
         r.check(dropped > 0, "controller dropped the fake server's DHCP replies", f"{dropped} packets dropped on {sw.name}")
 
 
+# --- T14: IPsec VPN -----------------------------------------------------------------
+def check_vpn(net, lab, r):
+    """The IPsec SA between r1 and r3 is up, and traffic between the base and the FOB crosses
+    the primary WAN link only as ESP: a capture on r1's WAN interface during Command -> FOB
+    pings shows ESP packets and no plain ICMP."""
+    import services
+    output("== IPsec VPN to the FOB (strongSwan, r1 <-> r3)\n")
+    a, b = lab.vpn["ends"]
+    status = services.vpn_cmd(net, a, "status").strip()
+    r.check(services.vpn_up(net, lab), f"IKE SA ESTABLISHED and IPsec tunnel INSTALLED on {a}", status.splitlines()[-1][:110] if status else "no SA")
+    wan = f"{a}-{b}"
+    src = net[next(iter(lab.zones["command"]["hosts"]))]
+    fob1 = next(h for h in lab.hosts.values() if h["zone"] == "fob")
+    # Capture only OUTGOING packets on both ends of the link: together that is exactly what
+    # crosses the cable. (Linux shows decrypted incoming packets on the receiving interface
+    # too, so a plain capture would wrongly look like plaintext on the wire.)
+    caps = []
+    for node, intf in ((a, wan), (b, f"{b}-{a}")):
+        cap = f"/var/run/fortress/{node}/vpn-capture.txt"
+        net[node].cmd(f"timeout 6 tcpdump -lni {intf} -Q out 'esp or icmp' > {cap} 2>&1 &")
+        caps.append((node, cap))
+    time.sleep(1)
+    reached = ping(src, fob1["ip"], count=5)
+    time.sleep(5)
+    lines = [l for node, cap in caps for l in net[node].cmd(f"cat {cap}").splitlines()]
+    esp = sum(" ESP(" in l for l in lines)
+    icmp = sum(" ICMP " in l for l in lines)
+    r.check(reached, f"{src.name} reaches {fob1['name']} through the tunnel", fob1["ip"])
+    r.check(esp > 0 and icmp == 0, f"only encrypted ESP on the WAN link {wan}",
+            f"{esp} ESP packets, {icmp} plain ICMP packets on the wire (both directions)")
+
+
+# --- T15: SSH and central logging --------------------------------------------------
+SSH_OPTS = ("-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o ConnectTimeout=4 -o LogLevel=ERROR")
+
+
+def check_ssh_logging(net, lab, r):
+    """Admins SSH in from the Management VLAN only; a failed login on r1 ends up in srv2's
+    central log; srv2 also collects the FOB router's and the controller's logs."""
+    import os
+    output("== SSH (Management VLAN only) and central logging on srv2\n")
+    user = os.environ.get("SUDO_USER") or "ubuntu"
+    key = "/etc/fortress/ssh/admin_key"
+    admin = net[next(iter(lab.zones["management"]["hosts"]))]
+    bar = net[next(iter(lab.zones["barracks"]["hosts"]))] if "barracks" in lab.zones else None
+    r1 = lab.gateway_routers()[0]
+    r1_ip = lab.zone_ip(r1, "management")
+    srv = lab.host_with_role("dhcp-dns")
+    out = admin.cmd(f"ssh {SSH_OPTS} -i {key} {user}@{r1_ip} 'ip -br -4 addr show {r1}-lan.99'")
+    r.check(f"{r1}-lan.99" in out, f"{admin.name} (Management) SSHs into {r1} with the admin key",
+            out.strip().splitlines()[-1][:60] if out.strip() else "no answer")
+    out = admin.cmd(f"ssh {SSH_OPTS} -i {key} {user}@{srv['ip']} 'ip -br -4 addr show {srv['name']}-eth0'")
+    r.check(f"{srv['name']}-eth0" in out, f"{admin.name} SSHs into {srv['name']} (routed through {r1})",
+            out.strip().splitlines()[-1][:60] if out.strip() else "no answer")
+    if bar:
+        out = bar.cmd(f"ssh {SSH_OPTS} -i {key} {user}@{r1_ip} true; echo rc=$?")
+        r.check("rc=0" not in out, f"{bar.name} (Barracks) can't SSH into {r1}", "blocked before sshd")
+    # A wrong password from the admin workstation: sshd on r1 logs it, the forwarder sends it on.
+    admin.cmd(f"sshpass -p wrong-password ssh {SSH_OPTS.replace('BatchMode=yes', 'BatchMode=no')} "
+              f"-o PubkeyAuthentication=no -o PreferredAuthentications=password {user}@{r1_ip} true")
+    syslog = lab.host_with_role("syslog")["name"]
+    remote = f"/var/log/fortress/{syslog}/remote"
+    found = ""
+    for _ in range(10):
+        found = net[syslog].cmd(f"grep -h 'Failed password' {remote}/{r1}.log 2>/dev/null | tail -1").strip()
+        if found:
+            break
+        time.sleep(1)
+    r.check(bool(found), f"the failed login on {r1} is in {syslog}'s central log", found[:90] or f"nothing in {remote}/{r1}.log")
+    for sender in (lab.router_with_role("fob"), "controller"):
+        n = net[syslog].cmd(f"wc -l < {remote}/{sender}.log 2>/dev/null").strip() or "0"
+        r.check(n.isdigit() and int(n) > 0, f"{syslog} collects {sender}'s logs", f"{n} lines in {remote}/{sender}.log")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -590,6 +665,9 @@ def run_all(net, lab, args):
     check_nat(net, lab, r)
     check_vrrp(net, lab, r)
     check_isolation(net, lab, r)
+    check_vpn(net, lab, r)
+    if "management" in lab.zones:
+        check_ssh_logging(net, lab, r)
     if not args.standalone:
         check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
