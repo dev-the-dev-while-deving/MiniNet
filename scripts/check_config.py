@@ -109,6 +109,19 @@ def check(cfg):
     for r in cfg["vpn"]["ends"]:
         if r not in routers:
             errors.append(f"vpn: unknown router {r}")
+    mon = cfg["monitor"]
+    if mon["zone"] not in zones:
+        errors.append(f"monitor: unknown zone {mon['zone']}")
+    else:
+        mz = zones[mon["zone"]]
+        mip = ipaddress.ip_address(mon["ip"])
+        if mip not in nets[mon["zone"]]:
+            errors.append(f"monitor: {mip} is not in {mon['zone']}'s subnet")
+        pool = mz.get("dhcp_range")
+        if pool and pool[0] <= int(mip) - int(nets[mon["zone"]].network_address) <= pool[1]:
+            errors.append(f"monitor: {mip} is inside {mon['zone']}'s DHCP pool")
+        claim_ip(mip, f"monitor {mon['host']}")
+
     for sw in cfg["ids"]["attach_to"]:
         if sw not in cfg["switches"]["core"]:
             errors.append(f"ids: attach_to {sw} is not a core switch")

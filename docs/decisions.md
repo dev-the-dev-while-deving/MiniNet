@@ -99,3 +99,16 @@ This replaces the roadmap's `controller/block_api.py`: the block API is `rest_ap
 - Every config (FRR, dnsmasq, strongSwan, rsyslog, iptables) is a Jinja2 template in `configs/<service>/`, e.g. `configs/frr/frr.conf.j2`. `scripts/render_configs.py` fills them in from `fortress.yaml` for each node and writes them to `/etc/fortress/<node>/` in the VM. The topology's start-up code then starts each daemon in its namespace with that config. This is our **infrastructure as code**: one YAML file plus templates define the whole network, and a change in the YAML flows into every config.
 - **Ansible is skipped.** It would need sshd in every namespace before anything else works, adds a tool to learn and explain, and gives nothing the templates don't. The roadmap's optional Ansible items stay unticked; in the viva, explain the template approach as the same idea (declarative config, generated rather than hand-written).
 - So the repo drops `ansible/` and the per-router `configs/frr/r1..r4/` folders: one template per service replaces four hand-written copies.
+
+## T03: Topology
+
+**D16. Topology details.**
+- **Interface names say what they connect.** `s1-c1` is s1's uplink to c1, `r1-r3` is r1's link to r3, `r1-lan.10` is VLAN 10 on r1's trunk, `s4-bar3` is bar3's port on s4. `ovs-vsctl show`, `ip addr` and the FRR configs can then be read without a lookup table. Linux allows 15 characters per name, and every name fits.
+- **Fixed MACs: `02:fe` + the host's IP bytes** (192.168.10.10 → `02:fe:c0:a8:0a:0a`). `02` marks a locally administered address, so it never clashes with a real vendor. Fixed MACs let dnsmasq always hand a host the same reserved IP (T04).
+- **Explicit datapath IDs** (cores `0x101`, `0x102`, access `0x201`–`0x205`, FOB `0x301`). Mininet would otherwise take the digits from the name, so c1 and s1 would both be datapath 1.
+- **RSTP root is c1 (priority 4096), backup root c2 (8192).** The tree is then predictable for the viva: every access switch forwards on its c1 uplink and blocks its c2 uplink (5 Alternate ports). Hosts, routers and ids1 sit on RSTP edge ports.
+- **The topology waits for RSTP** instead of sleeping a fixed time: it polls `ovs-appctl rstp/show` until every Root and Designated port is Forwarding (about 5 s here). With a fixed 3 s wait, the first ping after start-up failed.
+- **s6 (FOB LAN) is always a plain learning switch,** even in controller mode, because the FOB is outside the base's SDN domain. It has no loops, so it needs no RSTP.
+- **ids1's two ports are parked on unused VLAN 4094** until T17 turns them into mirror outputs, so they receive nothing yet.
+- **Exactly one internet host, cabled straight to r4.** More would need a switch; that's a one-line change if it's ever needed.
+- **`--check` mode** builds the lab, runs `topology/checks.py` and exits with the number of failures. It's how the automated tests (and later `start_all.sh`) know the lab is healthy.

@@ -160,6 +160,14 @@ vpn:
   local_subnets: [192.168.0.0/16, 10.10.60.0/24]
   remote_subnets: [172.16.70.0/24]
 
+# --- Monitoring link (docs/decisions.md D12) ---------------------------------
+# mon0 lives in the VM's root namespace (not a Mininet namespace), so Prometheus and the
+# controller tools running on the VM can reach the lab. It plugs into the Management VLAN.
+monitor:
+  host: mon0
+  zone: management
+  ip: 192.168.99.250
+
 # --- Detection -------------------------------------------------------------
 # ids1 has no IP address: it only listens on mirror ports (T17). An OVS mirror can only
 # output to a port on the same bridge, and traffic may cross either core, so ids1 gets one

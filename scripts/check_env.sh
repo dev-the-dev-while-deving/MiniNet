@@ -51,6 +51,10 @@ check "iperf3"             bash -c 'iperf3 --version | head -1'
 check "tcpdump"            bash -c 'tcpdump --version 2>&1 | head -1'
 check "tshark"             bash -c 'tshark --version | head -1'
 check "tree"               tree --version
+check "arping"             bash -c "arping -V 2>&1 | head -1"
+pkg   "DHCP relay"         isc-dhcp-relay
+check "dhclient"           bash -c "command -v dhclient"
+check "dig"                bash -c "dig -v 2>&1 | head -1"
 
 echo "== Monitoring"
 check "Prometheus"         bash -c 'prometheus --version 2>&1 | head -1'

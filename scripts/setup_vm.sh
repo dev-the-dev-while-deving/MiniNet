@@ -70,10 +70,10 @@ apt_get install -y -q \
   mininet openvswitch-switch \
   frr frr-pythontools \
   suricata \
-  dnsmasq-base \
+  dnsmasq-base isc-dhcp-relay \
   rsyslog \
   strongswan-swanctl charon-systemd \
-  nmap iperf3 tcpdump tshark \
+  nmap iperf3 tcpdump tshark iputils-arping \
   chrony \
   prometheus grafana \
   python3-venv python3-pip python3-yaml python3-jinja2 \
@@ -92,7 +92,7 @@ step "Configuring services"
 systemctl enable --now openvswitch-switch
 systemctl enable --now chrony
 sync_clock
-for svc in frr suricata strongswan prometheus prometheus-node-exporter grafana-server; do
+for svc in frr suricata strongswan isc-dhcp-relay prometheus prometheus-node-exporter grafana-server; do
   if systemctl list-unit-files "$svc.service" --no-legend | grep -q .; then
     systemctl disable --now "$svc" >/dev/null 2>&1 || true
   fi
