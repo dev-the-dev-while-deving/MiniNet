@@ -289,7 +289,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [~] T25 ⭐ Automated chaos test and results (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [x] T26 Demo mode
 - [x] T27 Documentation and report
-- [~] T28 Viva prep sheet (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [x] T28 Viva prep sheet
 - [ ] T29 Final hardening
 
 **Minimum version if time runs out:** T-1, T00–T09b, T11, T13, T17–T21, T25. That still includes three of the six signature features.
