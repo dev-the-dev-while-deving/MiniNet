@@ -165,3 +165,14 @@ This replaces the roadmap's `controller/block_api.py`: the block API is `rest_ap
 ## T09: Reactive rerouting
 
 **D22. Rerouting on the port-down message.** When a switch reports a link port down (OpenFlow `PortStatus`), the controller removes that link from its graph, recomputes every destination's tree and overwrites the affected rules (`reroute()` in `fortress_ctrl.py`). That message is the earliest signal available. Ryu's LLDP discovery reports the same loss a little later and then finds nothing left to do. When LLDP sees the link again, traffic moves back to the shortest path. Every event is one JSON line in `/var/log/fortress/ryu/reroutes.jsonl`: time, event, link, controller time in ms, and for every switch whose path to a destination changed, the old and new switch path (e.g. `comms1: s1-c1-s3 → s1-c2-s3`). Links discovered at start-up that change nothing aren't logged. Measured in `--check`: cutting c1–s1 rerouted 29 paths in about 20 ms of controller time and lost 0 of 121 pings at 10 pings/s.
+
+## T09b: Early measurements
+
+**D23. `scripts/measure.py` and the first numbers.** It starts the lab (`fortress_topo.start_lab()`), runs a **100 pings/s** stream (`ping -D` timestamps every reply), triggers one failure, restores it, and reports lost pings and **recovery time = the longest gap between two replies**. That is accurate to about 10 ms. Rows are appended to `docs/results/early.csv`. First results (3 runs each, cmd1 → srv3, reactive mode):
+
+| Failure | Lost | Recovery |
+|---------|------|----------|
+| Link c1–s1 down | 1–2 of ~400 | 52–61 ms |
+| r1 power loss (all interfaces down) | 1–2 of ~430 | 51–52 ms |
+
+The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T06). **Not yet verified** explanation: when r1's trunk port goes down, the controller forgets where the virtual MAC was and floods frames for it to every trunk, including r2's, and r2's kernel forwards them before VRRP has finished electing it. T25 will confirm or correct this with a packet capture on r2's trunk. iperf3 streams are left to T25.

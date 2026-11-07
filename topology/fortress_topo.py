@@ -313,6 +313,8 @@ def parse_args(argv=None):
                    help="switches run as learning switches with RSTP, no controller (until T08)")
     p.add_argument("--controller-ip", default="127.0.0.1", help="Ryu controller address (controller mode)")
     p.add_argument("--small", action="store_true", help="3 zones and fewer hosts, for 4 GB laptops")
+    p.add_argument("--mode", choices=["reactive", "proactive"], default="reactive",
+                   help="controller failover: reactive rerouting (T09) or fast-failover groups (T11)")
     p.add_argument("--check", action="store_true",
                    help="run the health checks plus the disruptive failover test, then exit instead of opening the CLI")
     p.add_argument("--cleanup", action="store_true",
@@ -328,14 +330,28 @@ def main():
         removed = cleanup(Lab())   # the full lab, so --small leftovers are covered too
         print(f"cleanup: stopped lab daemons, removed {len(removed)} leftover interfaces")
         return
-    fnet = FortressNet(lab, args)
+    net = start_lab(lab, args)
+    try:
+        failures = checks.run_all(net, lab, args)
+        if not args.check:
+            FortressCLI(net)
+    finally:
+        stop_lab(net, lab)
+    if args.check:
+        sys.exit(1 if failures else 0)
+
+
+def start_lab(lab, args):
+    """Bring the whole lab up: controller (unless --standalone), topology, then every service.
+    Used by main() and by scripts/measure.py. Returns the running Mininet network."""
     if not args.standalone:
-        info("*** Starting the SDN controller (Ryu + controller/fortress_ctrl.py)\n")
+        info(f"*** Starting the SDN controller (Ryu + controller/fortress_ctrl.py, {args.mode} mode)\n")
         try:
-            services.start_controller()
+            services.start_controller(mode=args.mode)
         except RuntimeError as e:
             services.stop()
             sys.exit(f"*** {e}")
+    fnet = FortressNet(lab, args)
     net = fnet.start()
     try:
         if args.standalone:
@@ -345,14 +361,15 @@ def main():
             info("*** Waiting for the controller to see every switch and link\n")
             info(f"*** Controller ready in {services.wait_for_controller(lab):.1f} s\n")
         services.start(net, lab)
-        failures = checks.run_all(net, lab, args)
-        if not args.check:
-            FortressCLI(net)
-    finally:
-        services.stop(net, lab)
-        net.stop()
-    if args.check:
-        sys.exit(1 if failures else 0)
+    except BaseException:
+        stop_lab(net, lab)
+        raise
+    return net
+
+
+def stop_lab(net, lab):
+    services.stop(net, lab)
+    net.stop()
 
 
 if __name__ == "__main__":
