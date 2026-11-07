@@ -6,9 +6,10 @@ Run (the topology starts it for you, see topology/services.py):
 OpenFlow 1.3 pipeline on every base switch (c1, c2, s1..s5):
 
   table 0  INGRESS   which ports may send at all, and VLAN tagging (vlan.py):
-                     access port -> push the port's VLAN tag; trunk/link port -> must be tagged;
+                     access port -> only its own host's MAC, push the port's VLAN tag, no DHCP
+                     server replies unless it is srv1's port; trunk/link port -> must be tagged;
                      ids/unknown ports -> no rule -> dropped. IPv6 is dropped (the lab is IPv4).
-  table 1  POLICY    zone isolation and rogue-device rules (T13). For now: go to table 2.
+  table 1  POLICY    zone isolation (T13): drop IPv4 between zones that may never talk.
   table 2  QOS       pick an output queue by traffic class (T12). For now: go to table 3.
   table 3  FORWARD   (VLAN, destination MAC) -> output port, installed by this app.
                      No match -> send the packet to the controller (packet-in).
@@ -76,6 +77,7 @@ class FortressController(app_manager.RyuApp):
         self.next_group = {}    # dpid -> next free group id
         self.lags = {}          # (dpid, neighbour) -> ports in its select group (T10, parallel cables)
         self.mac_names = {h["mac"]: h["name"] for h in self.lab.hosts.values()}
+        self.dhcp_server = self.lab.host_with_role("dhcp-dns")["name"]
         self.mac_names[self.lab.monitor["mac"]] = self.lab.monitor["name"]
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         kwargs["wsgi"].register(FortressRest, {APP_KEY: self})
@@ -114,6 +116,7 @@ class FortressController(app_manager.RyuApp):
         # The lab is IPv4-only; dropping IPv6 early saves the controller from hosts' IPv6 chatter.
         self.add_flow(dp, T_INGRESS, 200, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IPV6))
         self.add_flow(dp, T_POLICY, 0, p.OFPMatch(), goto=T_QOS)
+        self.install_policy(dp)
         self.add_flow(dp, T_QOS, 0, p.OFPMatch(), goto=T_FORWARD)
         self.install_qos(dp)
         # Table-miss in FORWARD: send the whole packet to the controller.
@@ -121,6 +124,20 @@ class FortressController(app_manager.RyuApp):
                       [p.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)])
         dp.send_msg(p.OFPPortDescStatsRequest(dp, 0))
         self.logger.info("switch %s connected", self.swname(dp.id))
+
+    def install_policy(self, dp):
+        """T13 POLICY table (decisions D27): drop IPv4 between zones that may never talk
+        (neither side's "reach" in fortress.yaml lists the other), e.g. Barracks <-> Intelligence.
+        Zones where one side may start connections pass here; the routers' stateful firewall
+        decides who may start. The monitoring host (mon0) is exempt, so Prometheus can see everything."""
+        p = dp.ofproto_parser
+        mask = lambda z: (str(self.lab.zones[z]["net"].network_address), str(self.lab.zones[z]["net"].netmask))
+        mon = self.lab.monitor["ip"]
+        for field in ("ipv4_src", "ipv4_dst"):
+            self.add_flow(dp, T_POLICY, 60, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, **{field: mon}), goto=T_QOS)
+        for a, b in self.lab.blocked_pairs():
+            self.add_flow(dp, T_POLICY, 50, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,
+                                                       ipv4_src=mask(a), ipv4_dst=mask(b)))   # no actions = drop
 
     def install_qos(self, dp):
         """T12: QOS table rules from fortress.yaml (decisions D26). Mission zones (Command,
@@ -156,10 +173,17 @@ class FortressController(app_manager.RyuApp):
         self.roles.setdefault(dp.id, {})[port_no] = role
         p = dp.ofproto_parser
         if role["kind"] == "access":
-            # Untagged frame from a host: tag it with the port's VLAN, then continue.
-            self.add_flow(dp, T_INGRESS, 100, p.OFPMatch(in_port=port_no, vlan_vid=0),
+            # Untagged frame from the host that belongs on this port: tag it with the port's VLAN.
+            # Port security (T13): only that host's MAC (fixed in fortress.yaml, D16) is accepted,
+            # so a different device on the port, or a spoofed MAC, gets no rule and is dropped.
+            self.add_flow(dp, T_INGRESS, 100, p.OFPMatch(in_port=port_no, vlan_vid=0, eth_src=role["mac"]),
                           [p.OFPActionPushVlan(ether_types.ETH_TYPE_8021Q),
                            p.OFPActionSetField(vlan_vid=VID_PRESENT | role["vlan"])], goto=T_POLICY)
+            if role["peer"] != self.dhcp_server:
+                # Rogue DHCP protection (T13): only srv1's port may send DHCP server replies
+                # (UDP source port 67). The relays on r1/r2 arrive on trunk ports and are allowed.
+                self.add_flow(dp, T_INGRESS, 150, p.OFPMatch(in_port=port_no, eth_type=ether_types.ETH_TYPE_IP,
+                                                             ip_proto=17, udp_src=67))
         elif role["kind"] in ("trunk", "link"):
             # Router trunks and switch links carry tagged frames only.
             self.add_flow(dp, T_INGRESS, 100, p.OFPMatch(in_port=port_no, vlan_vid=(VID_PRESENT, VID_PRESENT)),

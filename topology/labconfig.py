@@ -146,6 +146,20 @@ class Lab:
             "dhcp": dhcp, "role": h.get("role", ""),
         }
 
+    def may_start(self, a, b):
+        """True if zone a may start connections to zone/target b (fortress.yaml "reach")."""
+        if a == "fob":
+            return b in self.fob.get("reach", [])
+        return b in self.zones[a].get("reach", [])
+
+    def blocked_pairs(self):
+        """Zone pairs where NEITHER side may start a connection to the other. The controller
+        drops these outright; pairs where one side may start are left to the routers'
+        stateful firewall, which also lets the replies back (decisions D27)."""
+        names = list(self.zones)
+        return [(a, b) for a in names for b in names
+                if a != b and not self.may_start(a, b) and not self.may_start(b, a)]
+
     def gateway_routers(self):
         """The routers that act as zone gateways (r1 and r2)."""
         return [r for r, info in self.routers.items() if info["role"] == "gateway"]

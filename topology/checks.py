@@ -510,6 +510,66 @@ def check_qos(net, lab, r):
                     round(got, 1) if got else "", quiet_cmd, busy_cmd, quiet_bulk, busy_bulk])
 
 
+# --- T13: zone isolation and rogue control -------------------------------------------
+def check_isolation(net, lab, r):
+    """The "Allowed to reach" rules: blocked pairs never talk (dropped by the controller),
+    and where only one side may start, the routers' firewall blocks the other direction."""
+    output("== Zone isolation (who may start connections to whom)\n")
+    first = lambda z: net[next(iter(lab.zones[z]["hosts"]))] if z in lab.zones else None
+    cases = [("barracks", "intelligence", False, "controller drops it"),
+             ("command", "intelligence", True, "Command may reach every zone"),
+             ("intelligence", "command", True, "Intelligence may reach Command"),
+             ("barracks", "command", False, "router firewall: Barracks may not start connections to Command"),
+             ("command", "barracks", True, "Command may reach Barracks"),
+             ("communications", "barracks", False, "controller drops it"),
+             ("barracks", "servers", True, "Barracks may reach Servers")]
+    for a, b, allowed, why in cases:
+        src, dst = first(a), first(b)
+        if src is None or dst is None:
+            continue
+        ok = ping(src, lab.hosts[dst.name]["ip"], tries=2)
+        r.check(ok == allowed, f"{src.name} ({a}) -> {dst.name} ({b}) {'works' if allowed else 'blocked'}", why)
+
+
+def check_rogue(net, lab, r):
+    """Disruptive (--check only): an unknown device plugged into a Barracks switch gets nothing,
+    and a fake DHCP server on a Barracks host can't hand out addresses."""
+    output("== Rogue devices (unknown host, fake DHCP server)\n")
+    zone = lab.zones["barracks"]
+    sw = net[zone["switch"]]
+    hosts = [net[h] for h in zone["hosts"]]
+    # 1. An unknown device on a free port of s4.
+    rogue = net.addHost("rogue1", ip=None, mac="02:66:66:66:66:01")
+    net.addLink(rogue, sw, intfName1="rogue1-eth0", intfName2=f"{sw.name}-rogue1")
+    sw.attach(f"{sw.name}-rogue1")
+    rogue.cmd("ip addr add 192.168.40.200/24 dev rogue1-eth0; ip route add default via " + zone["vip"])
+    time.sleep(1)
+    r.check(not ping(rogue, lab.hosts[hosts[0].name]["ip"], tries=2), "unknown device on s4 can't reach anyone",
+            f"rogue1 -> {hosts[0].name}")
+    out = rogue.cmd("busybox udhcpc -n -q -t 3 -T 1 -i rogue1-eth0 -s /bin/true 2>&1")
+    r.check("obtained" not in out, "unknown device gets no DHCP lease", "no answer from srv1")
+    # 2. A fake DHCP server on the first Barracks host, offering a wrong range.
+    if len(hosts) >= 2:
+        fake, victim = hosts[0], hosts[1]
+        d = f"/var/run/fortress/{fake.name}"
+        fake.cmd(f"printf 'interface {fake.name}-eth0\\nstart 192.168.40.150\\nend 192.168.40.160\\n"
+                 f"lease_file {d}/udhcpd.leases\\npidfile {d}/udhcpd.pid\\nopt router 192.168.40.66\\n' > {d}/udhcpd.conf;"
+                 f" touch {d}/udhcpd.leases; busybox udhcpd -f {d}/udhcpd.conf > {d}/udhcpd.txt 2>&1 &")
+        time.sleep(1)
+        out = victim.cmd(f"busybox udhcpc -n -q -t 4 -T 1 -i {victim.name}-eth0 -s /bin/true 2>&1")
+        m = re.search(r"lease of (\S+) obtained", out)
+        got = m.group(1) if m else "nothing"
+        r.check(got == lab.hosts[victim.name]["ip"], f"{victim.name} still gets its address from srv1, not the fake server",
+                f"offered {got} (fake server hands out 192.168.40.150-160)")
+        time.sleep(1.5)   # OVS updates rule counters periodically, not instantly
+        offered = "sending OFFER" in fake.cmd(f"cat {d}/udhcpd.txt")
+        fake.cmd(f"kill $(cat {d}/udhcpd.pid) 2>/dev/null")
+        r.check(offered, "the fake DHCP server really answered", f"(its log shows an OFFER, so the test above means something)")
+        flows = sw.cmd(f"ovs-ofctl -O OpenFlow13 dump-flows {sw.name} table=0 | grep 'tp_src=67\\|udp_src=67'")
+        dropped = sum(int(n) for n in re.findall(r"n_packets=(\d+)", flows))
+        r.check(dropped > 0, "controller dropped the fake server's DHCP replies", f"{dropped} packets dropped on {sw.name}")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -529,6 +589,7 @@ def run_all(net, lab, args):
     check_backup_route(net, lab, r)
     check_nat(net, lab, r)
     check_vrrp(net, lab, r)
+    check_isolation(net, lab, r)
     if not args.standalone:
         check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
@@ -542,5 +603,6 @@ def run_all(net, lab, args):
             check_reroute(net, lab, r)
             if "barracks" in lab.zones:
                 check_qos(net, lab, r)
+                check_rogue(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

@@ -95,12 +95,26 @@ def frr(lab, frr_out):
 
 
 def iptables(lab, out):
-    """NAT on the gateway routers towards the ISP router."""
+    """NAT towards the ISP and the zone firewall (T13) for the gateway routers."""
     isp = lab.router_with_role("isp")
+    dns = lab.host_with_role("dhcp-dns")["ip"]
     files = []
     for r in lab.gateway_routers():
         nat_out = [i["name"] for i in lab.router_ifaces[r] if i["peer"] == isp]
-        text = env.get_template("iptables/rules.j2").render(router=r, nat_out=nat_out)
+        allow = []
+        sources = [(z["name"], z["title"], str(z["net"]), z.get("reach", [])) for z in lab.zones.values()]
+        sources.append(("fob", "FOB", str(lab.fob["net"]), lab.fob.get("reach", [])))
+        for name, title, src, reach in sources:
+            for target in reach:
+                if target == "internet":
+                    allow += [{"comment": f"{title} may reach the internet", "src": src, "dst": f"-o {o}"} for o in nat_out]
+                elif target == "fob":
+                    allow.append({"comment": f"{title} may reach the FOB", "src": src, "dst": f"-d {lab.fob['net']}"})
+                elif target in lab.zones:
+                    allow.append({"comment": f"{title} may reach {lab.zones[target]['title']}",
+                                  "src": src, "dst": f"-d {lab.zones[target]['net']}"})
+        text = env.get_template("iptables/rules.j2").render(router=r, nat_out=nat_out, dns=dns,
+                                                            monitor=lab.monitor["ip"], allow=allow)
         files.append(write(out / r / "iptables.rules", text))
     return files
 

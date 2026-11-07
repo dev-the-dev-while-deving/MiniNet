@@ -11,3 +11,21 @@
 -A POSTROUTING -o {{ intf }} -j MASQUERADE
 {% endfor %}
 COMMIT
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+# Zone firewall (T13, decisions D27). Everything {{ router }} routes between zones is dropped
+# unless a rule below allows the zone that STARTS the connection ("reach" in fortress.yaml).
+# Replies to an allowed connection (and its ICMP errors) come back through conntrack.
+-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# Shared service every zone may use: DNS on {{ dns }}.
+-A FORWARD -d {{ dns }} -p udp --dport 53 -j ACCEPT
+-A FORWARD -d {{ dns }} -p tcp --dport 53 -j ACCEPT
+# The monitoring host may reach everything (and everything may answer it).
+-A FORWARD -s {{ monitor }} -j ACCEPT
+{% for r in allow %}
+# {{ r.comment }}
+-A FORWARD -s {{ r.src }} {{ r.dst }} -j ACCEPT
+{% endfor %}
+COMMIT

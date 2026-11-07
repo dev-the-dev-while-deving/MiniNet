@@ -209,3 +209,15 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 - **Measured** in `--check` (`docs/results/qos.csv`): iperf3 asks for 100 Mbit/s UDP from bar1 to srv3 and gets **48.6 Mbit/s** (the cap). Meanwhile Command's ping to srv1 stays **under 0.4 ms** (0.34 quiet, 0.04 during the flood), while another Barracks host's ping to srv1 goes from 0.71 ms to **11.4 ms**, queued behind mission traffic. (Command being faster during the flood is most likely the busy VM keeping the CPU awake, not QoS.)
 - Standalone mode has no queues (`set_queue` needs the controller).
 - **For the viva:** this is the military theme driving a real QoS design: during a failure the surviving links are shared, and Command's traffic must not suffer for the Barracks' downloads.
+
+## T13: Zone isolation and rogue control
+
+**D27. Isolation split between the controller and the routers, plus port security.**
+- **The "Allowed to reach" column** is `reach:` in `fortress.yaml` (the FOB got one too: Command and Servers). It means "zones this zone may *start* connections to".
+- **Stateless vs stateful:** OpenFlow rules have no memory of connections, so the controller alone can't express "Command may reach Barracks, but Barracks may not reach Command": the replies from Barracks look like any other Barracks packet. So the work is split:
+  - **Controller (POLICY table):** drops IPv4 between zone pairs where *neither* side may start (`Lab.blocked_pairs()`: Intelligence, Communications, Barracks and Management never talk to each other; 12 directed pairs). These never reach a router.
+  - **r1/r2 (iptables FORWARD, `configs/iptables/rules.j2`):** default DROP; allow `ESTABLISHED,RELATED` (conntrack, so replies return), DNS to srv1 from every zone, the monitoring host, and one ACCEPT per `reach` entry, including the FOB and the internet (out of the link to r4). All traffic between zones is routed through r1/r2, so they see every connection's first packet. This is the defence in depth the roadmap asks for.
+- **Port security:** each access port's ingress rule matches the MAC of the one host that belongs there (fixed MACs, D16). A different device, or a spoofed MAC, gets no rule and is dropped. An unknown device on a new port gets no rule at all. This is our MAC allowlist: the allowlist *is* `fortress.yaml`.
+- **Rogue DHCP:** every access port except srv1's drops UDP source port 67 (DHCP server replies) at ingress. The relays on r1/r2 arrive on trunk ports, so they are unaffected.
+- **Tested in `--check`:** Barracks → Intelligence blocked (controller), Barracks → Command blocked (router) while Command → Barracks works, and Barracks → Servers works. An unknown host plugged into s4 reaches nobody and gets no DHCP lease. A fake DHCP server on bar1 really sent an OFFER (`192.168.40.154`), the controller dropped it, and bar2 still got its reserved `192.168.40.11` from srv1.
+- **Gotcha:** OVS updates rule packet counters periodically, so checks wait about 1.5 s before reading them.

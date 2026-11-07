@@ -114,6 +114,7 @@ fob:
   vlan: 70
   subnet: 172.16.70.0/24
   gateway: 172.16.70.1            # r3, no VRRP here
+  reach: [command, servers]       # what the FOB may start connections to (T13)
   switch: s6
   dhcp_range: null
   hosts:
