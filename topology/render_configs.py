@@ -25,6 +25,7 @@ from labconfig import ROOT, Lab
 TEMPLATES = ROOT / "configs"
 ETC = Path("/etc/fortress")
 FRR_ETC = Path("/etc/frr")       # FRR's instance tooling needs /etc/frr/<router>/
+VRRP_ADVERT_MS = 200             # VRRP advert interval; FRR's default is 1000 ms (slower failover)
 RUN = Path("/var/run/fortress")
 LOG = Path("/var/log/fortress")
 
@@ -71,7 +72,10 @@ def frr(lab, frr_out):
     for r, info in lab.routers.items():
         lans = []
         if info["role"] == "gateway":
-            lans = [{"name": f"{r}-lan.{z['vlan']}", "title": f"{z['title']} (VLAN {z['vlan']})"}
+            # VRID = the zone's VLAN number, so "VRRP 40" is always Barracks.
+            lans = [{"name": f"{r}-lan.{z['vlan']}", "title": f"{z['title']} (VLAN {z['vlan']})",
+                     "vrid": z["vlan"], "vip": z["vip"], "priority": lab.vrrp[r]["vrrp_priority"],
+                     "preempt": lab.vrrp["preempt"], "adv_ms": VRRP_ADVERT_MS}
                     for z in lab.zones.values()]
         elif info["role"] == "fob":
             lans = [{"name": f"{r}-lan", "title": "FOB LAN"}]

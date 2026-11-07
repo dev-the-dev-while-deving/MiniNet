@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # find labconfig/checks next to this file
 
 from mininet.cli import CLI
-from mininet.log import info, setLogLevel
+from mininet.log import info, output, setLogLevel
 from mininet.net import Mininet
 from mininet.node import Host, OVSSwitch, RemoteController
 
@@ -50,6 +50,29 @@ class LinuxRouter(Host):
         # Reverse-path filtering drops packets that arrive on "unexpected" interfaces, which
         # breaks asymmetric paths after a failover. Routers in this lab turn it off.
         self.cmd("sysctl -qw net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0")
+
+
+class FortressCLI(CLI):
+    """The normal Mininet CLI plus two demo commands for scenario 2 (equipment failure)."""
+
+    def do_fail(self, line):
+        """fail <node>: simulate a power loss (all its interfaces go down). Example: fail r1"""
+        name = line.strip()
+        if name not in self.mn:
+            output(f"usage: fail <node>   (unknown node '{name}')\n")
+            return
+        try:
+            output(f"{name}: {len(services.fail_node(self.mn, name))} interfaces down\n")
+        except ValueError as e:
+            output(f"{e}\n")
+
+    def do_recover(self, line):
+        """recover <node>: bring a failed node's interfaces back up. Example: recover r1"""
+        name = line.strip()
+        if name not in self.mn:
+            output(f"usage: recover <node>   (unknown node '{name}')\n")
+            return
+        output(f"{name}: {len(services.recover_node(self.mn, name))} interfaces up\n")
 
 
 def dpid(n):
@@ -181,11 +204,29 @@ class FortressNet:
         lab, net = self.lab, self.net
         for r in lab.gateway_routers():
             node = net[r]
+            # Only answer ARP for an address on the interface that owns it, so the plain VLAN
+            # interface never answers for the VRRP gateway address on the macvlan (below).
+            node.cmd("sysctl -qw net.ipv4.conf.all.arp_ignore=1 net.ipv4.conf.all.arp_announce=2")
             for z in lab.zones.values():
                 sub = f"{r}-lan.{z['vlan']}"   # e.g. r1-lan.10 = VLAN 10 on r1's trunk
                 node.cmd(f"ip link add link {r}-lan name {sub} type vlan id {z['vlan']}")
                 node.cmd(f"ip addr add {lab.zone_ip(r, z['name'])}/{z['prefixlen']} dev {sub}")
                 node.cmd(f"ip link set {sub} up")
+                # VRRP (T06, decisions D19): FRR's vrrpd needs a macvlan per virtual router, with
+                # the standard virtual MAC 00:00:5e:00:01:<VRID> and the gateway address (.1) on it.
+                # vrrpd keeps it "protodown" (switched off) on the Backup, so only the Master answers.
+                vrid = z["vlan"]
+                vif = f"{r}-vrrp{vrid}"
+                for c in (f"ip link add {vif} link {sub} type macvlan mode bridge",
+                          f"ip link set {vif} address 00:00:5e:00:01:{vrid:02x}",
+                          # r1's and r2's macvlans share one MAC, so they would also get the same
+                          # IPv6 link-local address; we don't use IPv6, so switch it off there.
+                          f"sysctl -qw net.ipv6.conf.{vif}.disable_ipv6=1",
+                          f"ip addr add {z['vip']}/{z['prefixlen']} dev {vif}",
+                          f"ip link set {vif} up"):
+                    out = node.cmd(c).strip()
+                    if out:   # these commands print nothing when they work
+                        info(f"*** {r}: '{c}' failed: {out}\n")
         for r, ifaces in lab.router_ifaces.items():
             for i in ifaces:
                 net[r].cmd(f"ip addr add {i['ip']}/{i['prefixlen']} dev {i['name']}")
@@ -245,13 +286,36 @@ class FortressNet:
         return self.net
 
 
+def cleanup(lab):
+    """Remove everything a crashed or killed lab can leave behind: our daemons (services.stop)
+    and the switch-side interfaces in the VM's root namespace. Mininet's own `mn -c` only
+    recognises interface names like s1-eth1, so it misses ours (s1-c1, c1-r1, mon0-eth0...).
+    Interfaces inside host namespaces disappear with their namespace by themselves."""
+    services.stop()
+    names = {f"{a}-{b}" for a in lab.core_switches + lab.access_switches + [lab.fob_switch]
+             for b in lab.core_switches + lab.access_switches + list(lab.hosts) + list(lab.routers)
+             + [lab.ids["host"], lab.monitor["name"]]}
+    names.add(f"{lab.monitor['name']}-eth0")
+    existing = subprocess.run(["ip", "-o", "link", "show"], capture_output=True, text=True).stdout
+    removed = []
+    for line in existing.splitlines():
+        name = line.split(": ")[1].split("@")[0]
+        if name in names:
+            subprocess.run(["ip", "link", "del", name], capture_output=True)
+            removed.append(name)
+    return removed
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Build the Fortress-Net Mininet lab from config/fortress.yaml")
     p.add_argument("--standalone", action="store_true",
                    help="switches run as learning switches with RSTP, no controller (until T08)")
     p.add_argument("--controller-ip", default="127.0.0.1", help="Ryu controller address (controller mode)")
     p.add_argument("--small", action="store_true", help="3 zones and fewer hosts, for 4 GB laptops")
-    p.add_argument("--check", action="store_true", help="run the health checks and exit instead of opening the CLI")
+    p.add_argument("--check", action="store_true",
+                   help="run the health checks plus the disruptive failover test, then exit instead of opening the CLI")
+    p.add_argument("--cleanup", action="store_true",
+                   help="only remove what a crashed lab left behind (daemons, interfaces), then exit")
     return p.parse_args(argv)
 
 
@@ -259,6 +323,10 @@ def main():
     args = parse_args()
     setLogLevel("info")
     lab = Lab(small=args.small)
+    if args.cleanup:
+        removed = cleanup(Lab())   # the full lab, so --small leftovers are covered too
+        print(f"cleanup: stopped lab daemons, removed {len(removed)} leftover interfaces")
+        return
     fnet = FortressNet(lab, args)
     net = fnet.start()
     try:
@@ -268,7 +336,7 @@ def main():
         services.start(net, lab)
         failures = checks.run_all(net, lab, args)
         if not args.check:
-            CLI(net)
+            FortressCLI(net)
     finally:
         services.stop(net, lab)
         net.stop()

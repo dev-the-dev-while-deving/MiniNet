@@ -221,6 +221,89 @@ def check_nat(net, lab, r):
     r.check(total > 0, "MASQUERADE rule translated packets", f"{total} packets on r1/r2")
 
 
+# --- T06: VRRP ------------------------------------------------------------------
+def check_vrrp(net, lab, r):
+    """r1 (priority 120) is Master and r2 (100) Backup for every zone, and hosts reach the
+    gateway address through the VRRP virtual MAC, not a real router's MAC."""
+    import services
+    output("== VRRP gateway redundancy\n")
+    g1, g2 = lab.gateway_routers()
+    s1, s2 = services.vrrp_status(net, g1), services.vrrp_status(net, g2)
+    for z in lab.zones.values():
+        v = z["vlan"]
+        r.check(s1.get(v) == "Master" and s2.get(v) == "Backup", f"VRRP {v} ({z['title']}): {g1} Master, {g2} Backup",
+                f"{g1}={s1.get(v, '?')} {g2}={s2.get(v, '?')}")
+    for z in lab.zones.values():
+        dhcp_hosts = [h for h in z["hosts"] if lab.hosts[h]["dhcp"]]
+        if not dhcp_hosts:
+            continue
+        h = net[dhcp_hosts[0]]
+        ping(h, z["vip"])
+        neigh = h.cmd(f"ip neigh show {z['vip']}")
+        vmac = f"00:00:5e:00:01:{z['vlan']:02x}"
+        r.check(vmac in neigh, f"{h.name}'s gateway {z['vip']} is the virtual MAC", vmac)
+
+
+def check_vrrp_failover(net, lab, r):
+    """Disruptive (--check only): kill r1, check r2 takes over every gateway while a host keeps
+    pinging its gateway, then bring r1 back and check it takes Master back (preemption)."""
+    import services
+    output("== VRRP failover test (r1 fails, then recovers)\n")
+    g1, g2 = lab.gateway_routers()
+    zone = lab.zones["command"]
+    host = net[next(iter(zone["hosts"]))]
+    fob1 = next(h for h in lab.hosts.values() if h["zone"] == "fob")
+    vrids = [z["vlan"] for z in lab.zones.values()]
+
+    def all_master(router):
+        return all(services.vrrp_status(net, router).get(v) == "Master" for v in vrids)
+
+    def all_backup(router):
+        return all(services.vrrp_status(net, router).get(v) == "Backup" for v in vrids)
+
+    log = f"/var/run/fortress/{host.name}/failover-ping.txt"
+    # 10 pings/s for 20 s. Remember its PID: the host's shell also runs udhcpc in the
+    # background, so a plain `wait` would wait for that too, forever.
+    ping_pid = host.cmd(f"ping -n -i 0.1 -w 20 {zone['vip']} > {log} 2>&1 & echo $!").strip().splitlines()[-1]
+    time.sleep(2)
+    t0 = time.time()
+    services.fail_node(net, g1)
+    took = None
+    while time.time() - t0 < 10:
+        if all_master(g2):
+            took = time.time() - t0
+            break
+        time.sleep(0.1)
+    r.check(took is not None, f"{g2} became Master of every gateway after {g1} failed",
+            f"{took:.1f} s" if took else "not within 10 s")
+    r.check(ping(host, zone["vip"]), f"{host.name} still reaches its gateway {zone['vip']}", f"now via {g2}")
+    r.check(ping(host, fob1["ip"], tries=8), f"{host.name} still reaches {fob1['name']}", "(OSPF routes around dead r1)")
+    time.sleep(2)
+    services.recover_node(net, g1)
+    t1 = time.time()
+    back = None
+    # A cut-off r1 may still believe it is Master (it can't hear r2), so "done" means both:
+    # r1 Master again AND r2 back to Backup, i.e. they agree again.
+    while time.time() - t1 < 20:
+        if all_master(g1) and all_backup(g2):
+            back = time.time() - t1
+            break
+        time.sleep(0.2)
+    r.check(back is not None, f"{g1} Master and {g2} Backup again after {g1} recovered (preemption)",
+            f"{back:.1f} s" if back is not None else "not within 20 s")
+    host.cmd(f"wait {ping_pid}")   # let the 20 s ping finish
+    out = host.cmd(f"cat {log}")
+    m = re.search(r"(\d+) packets transmitted, (\d+) received", out)
+    if m:
+        sent, got = int(m.group(1)), int(m.group(2))
+        lost = sent - got
+        # Each lost ping = 0.1 s without a gateway.
+        r.check(lost <= 30, "pings to the gateway lost during failover",
+                f"{lost} of {sent} (about {lost * 0.1:.1f} s without a gateway)")
+    else:
+        r.bad("pings to the gateway lost during failover", "(no ping summary)")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -237,5 +320,9 @@ def run_all(net, lab, args):
     check_primary_path(net, lab, r)
     check_backup_route(net, lab, r)
     check_nat(net, lab, r)
+    check_vrrp(net, lab, r)
+    if args.check:
+        # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
+        check_vrrp_failover(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

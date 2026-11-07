@@ -31,15 +31,6 @@ def node_dirs(node, owner=None):
             shutil.chown(d, user=owner)
 
 
-# --- Gateways ----------------------------------------------------------------------
-def start_temporary_gateways(net, lab):
-    """Until VRRP exists (T06), r1 holds every zone's gateway address (.1) as a plain
-    extra address, so hosts and servers have a working default gateway."""
-    r1 = lab.gateway_routers()[0]
-    for z in lab.zones.values():
-        net[r1].cmd(f"ip addr add {z['vip']}/{z['prefixlen']} dev {r1}-lan.{z['vlan']}")
-
-
 # --- DHCP and DNS (T04) ------------------------------------------------------------
 def start_dhcp_server(net, lab):
     """dnsmasq on srv1, with the config rendered from fortress.yaml."""
@@ -139,14 +130,67 @@ def wait_for_ospf(net, lab, timeout=40):
     return timeout
 
 
+def vrrp_status(net, router):
+    """{VRID: "Master"/"Backup"/"Initialize"} for one router, from `show vrrp json`."""
+    data = net[router].cmd(f"vtysh -N {router} -c 'show vrrp json'")
+    import json
+    try:
+        routers = json.loads(data[data.index("["):])
+    except ValueError:
+        return {}
+    return {vr["vrid"]: vr.get("v4", {}).get("status", "") for vr in routers}
+
+
+def wait_for_vrrp(net, lab, timeout=20):
+    """Wait until every zone's virtual router has exactly one Master. Returns the seconds taken."""
+    start = time.time()
+    vrids = [z["vlan"] for z in lab.zones.values()]
+    while time.time() - start < timeout:
+        status = [vrrp_status(net, r) for r in lab.gateway_routers()]
+        if all(sum(s.get(v) == "Master" for s in status) == 1 for v in vrids):
+            return time.time() - start
+        time.sleep(0.5)
+    return timeout
+
+
+# --- Simulated failures (demo scenario 2, CLI commands `fail` / `recover`) -----------
+def fail_node(net, name):
+    """Simulate a power loss: take every interface of a node down. Its processes keep
+    running, but it can no longer send or receive anything, exactly like a dead box."""
+    node = net[name]
+    if not node.inNamespace:
+        raise ValueError(f"{name} is in the VM's root namespace; failing it would cut the VM off")
+    names = [l.split(": ")[1].split("@")[0] for l in node.cmd("ip -o link show").splitlines() if ": " in l]
+    names = [n for n in names if n != "lo"]
+    for n in names:
+        node.cmd(f"ip link set {n} down")
+    node.failed_intfs = names
+    return names
+
+
+def recover_node(net, name):
+    """Undo fail_node(): bring the interfaces back up. Two passes, because a VLAN or macvlan
+    interface can only come up once the interface it sits on is up."""
+    node = net[name]
+    names = getattr(node, "failed_intfs", [])
+    for _ in range(2):
+        for n in names:
+            node.cmd(f"ip link set {n} up")
+    node.failed_intfs = []
+    return names
+
+
 # --- Start and stop ---------------------------------------------------------------
 def start(net, lab):
     """Bring every service up, in order. Each step depends on the ones before it."""
     info("*** Rendering configs from fortress.yaml\n")
     for f in render_configs.render_all(lab):
         info(f"    {f}\n")
-    info("*** Gateways: r1 holds the zone gateway addresses (until VRRP, T06)\n")
-    start_temporary_gateways(net, lab)
+    # Routing first: FRR also runs VRRP, which provides every zone's gateway (.1). DHCP needs
+    # it, because srv1's replies to the relays go out through the Servers zone's gateway.
+    info("*** Routing: FRR (OSPF + VRRP) on every router, NAT on r1/r2\n")
+    start_routing(net, lab)
+    info(f"*** VRRP: every gateway has a Master after {wait_for_vrrp(net, lab):.1f} s\n")
     info("*** DHCP/DNS server (dnsmasq on srv1) and relays (r1, r2)\n")
     start_dhcp_server(net, lab)
     start_dhcp_relays(net, lab)
@@ -154,8 +198,6 @@ def start(net, lab):
     missing = start_dhcp_clients(net, lab)
     if missing:
         info(f"*** No DHCP lease for: {', '.join(missing)}\n")
-    info("*** Routing: FRR (OSPF) on every router, NAT on r1/r2\n")
-    start_routing(net, lab)
     info(f"*** OSPF converged in {wait_for_ospf(net, lab):.1f} s\n")
 
 

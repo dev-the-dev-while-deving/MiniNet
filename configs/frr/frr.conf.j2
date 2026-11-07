@@ -23,6 +23,16 @@ exit
 interface {{ l.name }}
  ip ospf area 0
  ip ospf passive
+{% if l.vrid is defined %}
+ ! VRRP virtual router {{ l.vrid }}: gateway {{ l.vip }} for this zone, shared with the other gateway router.
+ ! Higher priority wins Master ({{ router }} = {{ l.priority }}); preempt = take Master back after a reboot.
+ ! An advert every {{ l.adv_ms }} ms: the Backup takes over after about 3 missed adverts.
+ vrrp {{ l.vrid }} version 3
+ vrrp {{ l.vrid }} priority {{ l.priority }}
+ vrrp {{ l.vrid }} advertisement-interval {{ l.adv_ms }}
+ {{ "" if l.preempt else "no " }}vrrp {{ l.vrid }} preempt
+ vrrp {{ l.vrid }} ip {{ l.vip }}
+{% endif %}
 exit
 !
 {% endfor %}
