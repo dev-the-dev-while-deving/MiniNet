@@ -264,7 +264,7 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T01 Repository scaffold
 - [x] T02 Setup script
 - [x] T02b Architecture decisions
-- [ ] T03 Topology
+- [~] T03 Topology (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T04 DHCP and DNS
 - [ ] T05 Routing with FRR
 - [ ] T06 Gateway redundancy (VRRP)
