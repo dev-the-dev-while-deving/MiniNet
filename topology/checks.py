@@ -733,6 +733,69 @@ def check_threat_engine(net, lab, r):
                               "(detection/baseline_traffic.py then train_model.py)")
 
 
+def insider_run(net, lab, wait=25):
+    """Run demo scenario 3 once and time it. The Barracks attacker sweeps ports 1-200 on the web
+    server (inside the Mininet lab only), then we watch each stage of the response happen:
+
+        alert_s    Suricata's first scan alert for the attacker   (T17)
+        breach_s   the engine scores it 70 or more                 (T20)
+        block_s    the controller has cut it off at its own port   (T21)
+
+    All three are seconds since the sweep started (None if that stage never happened).
+    Used by the health check below, by scripts/chaos_test.py and by scripts/demo.py."""
+    import services
+    attacker = next(h for h in lab.hosts.values() if h["role"] == "attacker")
+    target = next(h for h in lab.hosts.values() if h["role"] == "web-file")
+    res = {"attacker": attacker, "target": target, "alerts": [], "scored": None, "blocked": [],
+           "alert_s": None, "breach_s": None, "block_s": None}
+    t0 = time.time()
+    out = net[attacker["name"]].cmd(f"nmap -sS -Pn -n --max-retries 1 -p 1-200 {target['ip']}")
+    res["swept"] = "Nmap done" in out
+    deadline = t0 + res_window(wait)
+    # Poll all three stages together, once a second, and note when each first appears.
+    while time.time() < deadline and res["block_s"] is None:
+        now = time.time() - t0
+        if res["alert_s"] is None:
+            res["alerts"] = [a for a in services.ids_alerts(lab, since=t0 - 1)
+                             if a["src_ip"] == attacker["ip"] and a["kind"] == "scan"]
+            if res["alerts"]:
+                res["alert_s"] = round(now, 1)
+        hosts = services.threat_state().get("hosts", [])
+        scored = next((h for h in hosts if h["ip"] == attacker["ip"]), None)
+        if scored and (res["scored"] is None or scored["score"] >= res["scored"]["score"]):
+            res["scored"] = scored
+        if res["breach_s"] is None and scored and scored["band"] == "breach":
+            res["breach_s"] = round(now, 1)
+        res["blocked"] = [b for b in services.controller_blocked() if b["ip"] == attacker["ip"]]
+        if res["blocked"]:
+            res["block_s"] = round(now, 1)
+            break
+        time.sleep(1)
+    if res["alert_s"] is None:   # the alert may land in the same second as the block
+        res["alerts"] = [a for a in services.ids_alerts(lab, since=t0 - 1)
+                         if a["src_ip"] == attacker["ip"] and a["kind"] == "scan"]
+        res["alert_s"] = res["block_s"] if res["alerts"] else None
+    return res
+
+
+def res_window(wait):
+    """How long insider_run waits for the whole chain (scan, alert, score, block)."""
+    return wait + 20
+
+
+def insider_reset(net, lab, quiet=40):
+    """Lift the block and let the evidence age out, so the next run starts clean. The engine is
+    paused first, or it would act on the same (still fresh) alerts again at once."""
+    import services
+    attacker = next(h for h in lab.hosts.values() if h["role"] == "attacker")
+    services.stop_engine()
+    time.sleep(1)
+    lifted = services.controller_post("unblock", {"ip": attacker["ip"]})
+    time.sleep(quiet)            # IDS alerts count for 30 s (T20), so wait that out
+    services.start_engine(net, lab)
+    return lifted
+
+
 def check_insider_scenario(net, lab, r):
     """Disruptive (--check only). Demo scenario 3, end to end, which is also the acceptance
     check for four tasks at once:
@@ -747,38 +810,19 @@ def check_insider_scenario(net, lab, r):
     import services
     output("== Insider scenario: port sweep -> alert -> score -> block (T17, T20, T21, T24)\n")
     attacker = next(h for h in lab.hosts.values() if h["role"] == "attacker")
-    target = next(h for h in lab.hosts.values() if h["role"] == "web-file")
     neighbour = next(lab.hosts[n] for n in lab.zones["barracks"]["hosts"] if n != attacker["name"])
     srv1 = lab.host_with_role("dhcp-dns")["ip"]
     incidents = Path("/home/ubuntu/fortress-net/docs/incidents")
     before = set(incidents.glob("*.md")) if incidents.is_dir() else set()
 
-    t0 = time.time()
-    out = net[attacker["name"]].cmd(f"nmap -sS -Pn -n --max-retries 1 -p 1-200 {target['ip']}")
-    r.check("Nmap done" in out, f"{attacker['name']} swept ports 1-200 on {target['name']}",
+    res = insider_run(net, lab)
+    target, alerts, scored, blocked = res["target"], res["alerts"], res["scored"], res["blocked"]
+    r.check(res["swept"], f"{attacker['name']} swept ports 1-200 on {target['name']}",
             f"{target['ip']} (inside the lab only)")
-
-    # T17: the signature fires.
-    alerts = []
-    for _ in range(20):
-        alerts = [a for a in services.ids_alerts(lab, since=t0 - 1)
-                  if a["src_ip"] == attacker["ip"] and a["kind"] == "scan"]
-        if alerts:
-            break
-        time.sleep(1)
     r.check(bool(alerts), f"Suricata raised a scan alert for {attacker['name']}",
-            f'"{alerts[0]["signature"]}" (sid {alerts[0]["sid"]}), {len(alerts)} alerts' if alerts
-            else "nothing in eve.json")
-
-    # T20: the engine scores it a breach, and can explain it from more than one signal.
-    scored = None
-    for _ in range(25):
-        hosts = services.threat_state().get("hosts", [])
-        scored = next((h for h in hosts if h["ip"] == attacker["ip"]), None)
-        if scored and scored["band"] == "breach":
-            break
-        time.sleep(1)
-    r.check(scored is not None and scored["band"] == "breach",
+            f'"{alerts[0]["signature"]}" (sid {alerts[0]["sid"]}), {res["alert_s"]} s after the sweep began'
+            if alerts else "nothing in eve.json")
+    r.check(res["breach_s"] is not None or bool(blocked),
             f"the engine scored {attacker['name']} as a Breach (70 or more)",
             f"{scored['score']}/100" if scored else "not scored")
     if scored:
@@ -786,18 +830,9 @@ def check_insider_scenario(net, lab, r):
             output(f"       - {reason}\n")
         r.check(len(scored["signals"]) >= 2, "the score rests on at least two independent signals",
                 ", ".join(scored["signals"]))
-
-    # T21: blocked at its own port, within seconds, and nobody else is touched.
-    blocked = []
-    for _ in range(20):
-        blocked = [b for b in services.controller_blocked() if b["ip"] == attacker["ip"]]
-        if blocked:
-            break
-        time.sleep(1)
-    took = time.time() - t0
     r.check(bool(blocked), f"the controller cut {attacker['name']} off at its access port",
-            f"{blocked[0]['port']} on {blocked[0]['switch']}, {took:.0f} s after the sweep started"
-            if blocked else f"not blocked within {took:.0f} s")
+            f"{blocked[0]['port']} on {blocked[0]['switch']}, {res['block_s']:.0f} s after the sweep started"
+            if blocked else "not blocked in time")
     r.check(not ping(net[attacker["name"]], srv1, tries=2), f"{attacker['name']} can no longer reach anything",
             f"its pings to {srv1} are dropped at {blocked[0]['port'] if blocked else 'its port'}")
     r.check(ping(net[neighbour["name"]], srv1, tries=3), f"{neighbour['name']} in the same zone is unaffected",
@@ -808,15 +843,11 @@ def check_insider_scenario(net, lab, r):
     report = sorted(new)[-1] if new else None
     r.check(report is not None, "an incident report was written", report.name if report else "none in docs/incidents/")
 
-    # T21: and it can be lifted. The engine is paused first, or it would immediately act on the
-    # same evidence again (which is correct behaviour, but it would hide whether unblock works).
-    services.stop_engine()
-    time.sleep(1)
-    lifted = services.controller_post("unblock", {"ip": attacker["ip"]})
+    # T21: and it can be lifted.
+    lifted = insider_reset(net, lab, quiet=0)
     r.check("error" not in lifted, f"POST /fortress/unblock let {attacker['name']} back on",
             f"blocked for {lifted.get('blocked_for', '?')} s")
     r.check(ping(net[attacker["name"]], srv1, tries=6), f"{attacker['name']} can reach the network again", srv1)
-    services.start_engine(net, lab)
 
 
 # --- T18: traffic features and baseline ---------------------------------------------

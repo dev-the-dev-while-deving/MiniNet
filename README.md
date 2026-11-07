@@ -23,6 +23,27 @@ It survives link and router failures by itself, detects insider attacks with Sur
 
 Empty folders hold a `.gitkeep` until the task that fills them.
 
+## Documentation
+
+| Document | For |
+|----------|-----|
+| [`docs/architecture.md`](docs/architecture.md) | how it is built: topology, addressing, layers, controller pipeline, detection (with diagrams) |
+| [`docs/testing.md`](docs/testing.md) | every test, how to repeat it, and the results |
+| [`docs/cisco-equivalents.md`](docs/cisco-equivalents.md) | each part mapped to the Cisco IOS feature it replaces |
+| [`docs/decisions.md`](docs/decisions.md) | why each tool and design was chosen (D1-D39) |
+| [`docs/report/report.md`](docs/report/report.md) | the project report (draft) |
+
+## Before you start
+
+- A computer with **16 GB RAM or more** (8 GB works with `--small`), macOS, Windows or Linux.
+- [Multipass](https://multipass.run) (the create script offers to install it on a Mac) and Git.
+- About 40 GB of free disk and an internet connection for the first setup (~20 minutes).
+
+```bash
+git clone https://github.com/dev-the-dev-while-deving/MiniNet.git
+cd MiniNet
+```
+
 ## Quick start
 
 1. Create the lab VM (below): `./scripts/vm/create_vm.sh`
@@ -42,6 +63,33 @@ Empty folders hold a `.gitkeep` until the task that fills them.
 Type `exit` to stop the lab. If anything goes wrong (a crash, a closed terminal), `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh` removes all leftovers and confirms the VM is clean.
 
 Automated check: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` runs every health check, the failure tests and the full insider scenario, then exits (0 = all passed).
+
+## The demo (10 minutes)
+
+```bash
+./scripts/vm/vm.sh sudo ./scripts/demo.sh           # live: pauses for Enter, prints what to say and point at
+./scripts/vm/vm.sh sudo ./scripts/demo.sh --auto    # rehearsal: no pauses, checks it fits in 10 minutes
+```
+
+It starts the lab and walks through the three scenarios while two ping streams run (Command →
+FOB, Command → servers): a cut core cable, r1 losing power, the primary WAN cut, then the
+Barracks insider being detected, scored and blocked, an ESP-only capture of the VPN
+(`docs/evidence/demo-vpn.pcap`, open it in Wireshark), the incident report and the results
+table. It ends in the Mininet CLI for questions. Have Grafana open in a browser alongside.
+
+## Measuring the results (chaos test)
+
+```bash
+./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py                       # full run, about 30 minutes
+./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py --runs 1 --only WAN   # one failure, 2 minutes
+```
+
+It breaks the network on purpose, 5 times per failure in both controller modes, and writes
+`docs/results/results.csv`, `summary.csv`, `detection.csv` and three charts. What the numbers mean
+is in [`docs/testing.md`](docs/testing.md).
+
+**Only one lab can run in the VM at a time.** `start_all.sh`, `demo.sh`, `chaos_test.py` and
+`--check` each clear whatever else is running, so don't start one while another is going.
 
 ## Watching it work
 
@@ -112,3 +160,22 @@ Then use `multipass exec fortress -- bash -lc "cd ~/fortress-net && <cmd>"` in p
 Restore a snapshot: `multipass stop fortress && multipass restore fortress.clean-vm`.
 
 **Rules:** never install Mininet/OVS/FRR on the host machine. Keep venvs, Suricata logs and Prometheus data inside the VM, not in the shared folder. Save captures to `docs/evidence/*.pcap` in the VM and open them in Wireshark on your machine.
+
+## Telegram alerts (optional)
+
+Copy `.env.example` to `.env` and fill in `FORTRESS_TELEGRAM_TOKEN` (from @BotFather) and
+`FORTRESS_TELEGRAM_CHAT`. `.env` is git-ignored: never commit it. Test it with
+`./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --test-alert'`.
+Without it, everything works and the alert is only written to the incident report.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| "File exists" or "Error creating interface pair" on start | a previous run crashed: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`, then start again |
+| `apt` errors about a release "not valid yet", or odd log times | the VM clock drifted after a stop/start: `./scripts/vm/vm.sh sudo chronyc -a makestep` |
+| "Illegal instruction" from Python on an Apple Silicon Mac | run `setup_vm.sh` again (it sets `OPENSSL_armcap=0`, D8), then open a new shell |
+| `vm.sh` says the VM doesn't exist | `multipass list`; create it with `./scripts/vm/create_vm.sh` |
+| Grafana won't load | use the VM IP from `multipass info fortress`, port 3000, with the lab running |
+| The threat engine says "rules only" | no anomaly model yet: train one (see Detection and response) |
+| A check fails in `--check` | the line says what was expected; the logs are in `/var/log/fortress/<node>/` in the VM |

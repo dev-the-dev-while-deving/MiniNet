@@ -6,6 +6,8 @@
 Reads docs/results/results.csv (written by chaos_test.py) and writes:
     docs/results/recovery_by_failure.png   recovery time per failure, reactive vs proactive
     docs/results/loss_by_failure.png       packets lost per failure, reactive vs proactive
+    docs/results/detection_to_block.png    insider runs: first alert, Breach score, block
+                                           (from docs/results/detection.csv, if it exists)
 Each bar is the median of the runs (one slow run can't hide the typical value); the thin line on it spans the fastest to the slowest run, so
 the chart shows how repeatable a number is, not just its average.
 """
@@ -57,6 +59,34 @@ def grouped_bars(rows, field, ylabel, title, out):
     return out
 
 
+def detection_chart(out):
+    """One horizontal bar per insider run: sweep start -> first alert -> Breach -> blocked."""
+    rows = list(csv.DictReader(open(RESULTS / "detection.csv")))
+    stages = [("alert_s", "first IDS alert", "#4C72B0"), ("breach_s", "score 70+ (Breach)", "#DD8452"),
+              ("block_s", "blocked at its port", "#C44E52")]
+    fig, ax = plt.subplots(figsize=(9, 0.5 * len(rows) + 1.8))
+    for i, r in enumerate(rows):
+        prev = 0.0
+        for field, label, color in stages:
+            if not r[field]:
+                continue
+            t = float(r[field])
+            ax.barh(i, t - prev, left=prev, color=color, label=label if i == 0 else None)
+            prev = t
+        ax.text(prev + 0.2, i, f"{prev:.0f} s  (score {r['score']})", va="center", fontsize=9)
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels([f"run {r['run']}" for r in rows])
+    ax.invert_yaxis()
+    ax.set_xlabel("seconds since the port sweep started")
+    ax.set_title("Insider attack: detection to block, per run")
+    ax.legend(loc="lower right")
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return out
+
+
 def main():
     rows = load()
     runs = max(int(r["run"]) for r in rows)
@@ -65,7 +95,10 @@ def main():
                      RESULTS / "recovery_by_failure.png")
     b = grouped_bars(rows, "lost", "pings lost (at 100 pings/s)",
                      f"Packets lost per failure (median of {runs} runs)", RESULTS / "loss_by_failure.png")
-    print(f"charts: {a.name}, {b.name}")
+    names = [a.name, b.name]
+    if (RESULTS / "detection.csv").exists():
+        names.append(detection_chart(RESULTS / "detection_to_block.png").name)
+    print("charts: " + ", ".join(names))
 
 
 if __name__ == "__main__":

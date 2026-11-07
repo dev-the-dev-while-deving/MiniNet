@@ -19,8 +19,14 @@ measurement is an anecdote and five are a result.
     gateway router r1    VRRP, the gateway address itself       cmd1 -> its gateway .1
     primary WAN r1-r3    OSPF + the VPN's dead-peer detection   cmd1 -> fob1
 
+Then (once, in reactive mode: detection doesn't depend on the failover mode) it repeats demo
+scenario 3 `--runs` times with topology/checks.py's insider_run(): the Barracks attacker sweeps
+ports on the web server inside the lab, and we time the first IDS alert, the Breach score and
+the block. Between runs the block is lifted and the evidence left to age out.
+
 Output:
     docs/results/results.csv          one row per run
+    docs/results/detection.csv        one row per insider run: alert, breach and block times
     docs/results/summary.csv          mean / min / max per failure and mode
     docs/results/*.png                charts (scripts/charts.py)
 The lab is stopped at the end of each mode.
@@ -40,6 +46,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from mininet.log import setLogLevel
 
+import checks
 import fortress_topo
 import services
 from labconfig import Lab
@@ -88,12 +95,28 @@ def failures(net, lab):
     ]
 
 
-def run_mode(mode, runs, settle, small, only=None):
+def detection_runs(net, lab, runs):
+    """Time the insider response `runs` times (see the module docstring)."""
+    rows = []
+    for run in range(1, runs + 1):
+        res = checks.insider_run(net, lab)
+        sc = res["scored"] or {}
+        rows.append({"date": datetime.now(timezone.utc).isoformat(timespec="seconds"), "run": run,
+                     "attacker": res["attacker"]["name"], "alert_s": res["alert_s"],
+                     "breach_s": res["breach_s"], "block_s": res["block_s"],
+                     "score": sc.get("score"), "signals": " + ".join(sc.get("signals", []))})
+        print(f"[detection] run {run}: alert {res['alert_s']} s, breach {res['breach_s']} s, "
+              f"blocked {res['block_s']} s, score {sc.get('score')} ({rows[-1]['signals']})", flush=True)
+        checks.insider_reset(net, lab)
+    return rows
+
+
+def run_mode(mode, runs, settle, small, only=None, detection=False):
     """Start the lab in one controller mode, run every failure `runs` times, stop the lab."""
     lab = Lab(small=small)
     args = fortress_topo.parse_args(["--mode", mode] + (["--small"] if small else []))
     net = fortress_topo.start_lab(lab, args)
-    rows = []
+    rows, det = [], []
     try:
         # Let routing, VRRP and the VPN settle, and let every host be learned once.
         time.sleep(5)
@@ -112,9 +135,11 @@ def run_mode(mode, runs, settle, small, only=None):
                       f"recovery {res['recovery_s'] * 1000:6.0f} ms, "
                       f"{'healed' if res['healed'] else 'NOT healed (back only after repair)'}", flush=True)
                 time.sleep(settle)
+        if detection:
+            det = detection_runs(net, lab, runs)
     finally:
         fortress_topo.stop_lab(net, lab)
-    return rows
+    return rows, det
 
 
 def summarise(rows):
@@ -151,14 +176,23 @@ def main():
     p.add_argument("--settle", type=float, default=6, help="seconds between runs (default 6)")
     p.add_argument("--small", action="store_true")
     p.add_argument("--only", help="run only failures whose name contains this text, e.g. WAN")
+    p.add_argument("--no-detection", action="store_true", help="skip the insider-response timing")
     a = p.parse_args()
     setLogLevel("warning")
 
-    rows = []
-    for mode in a.modes:
+    rows, det = [], []
+    for i, mode in enumerate(a.modes):
         print(f"\n=== {mode} mode: starting the lab ===", flush=True)
-        rows += run_mode(mode, a.runs, a.settle, a.small, a.only)
+        detect = i == 0 and not a.no_detection and not a.only and not a.small
+        r, d = run_mode(mode, a.runs, a.settle, a.small, a.only, detection=detect)
+        rows += r
+        det += d
         services.stop()                      # belt and braces between modes
+    if det:
+        write_csv(RESULTS / "detection.csv", det)
+        ok = [d for d in det if d["block_s"] is not None]
+        print(f"\n=== detection: blocked in {len(ok)}/{len(det)} runs"
+              + (f", median {statistics.median(d['block_s'] for d in ok):.1f} s after the sweep began" if ok else ""))
 
     write_csv(RESULTS / "results.csv", rows)
     summary = summarise(rows)

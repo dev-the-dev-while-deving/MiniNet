@@ -287,8 +287,8 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T23 Monitoring stack
 - [x] T24 Telegram alerts and incident reports
 - [~] T25 ⭐ Automated chaos test and results (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [~] T26 Demo mode (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [~] T27 Documentation and report (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [x] T26 Demo mode
+- [x] T27 Documentation and report
 - [ ] T28 Viva prep sheet
 - [ ] T29 Final hardening
 
