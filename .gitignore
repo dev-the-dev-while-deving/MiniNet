@@ -19,6 +19,10 @@ venvs/
 *.pkl
 detection/data/
 
+# Incident reports the threat engine writes on every breach (T24): real evidence,
+# but regenerated on every test run, so they stay local and get attached to the report.
+docs/incidents/*.md
+
 # Runtime logs (Suricata, controller, threat engine)
 *.log
 eve.json

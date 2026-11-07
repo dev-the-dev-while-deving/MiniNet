@@ -55,13 +55,19 @@ def targets(lab):
                              else lab.fob.get("reach", [])):
                 if dst_zone in ("internet",):
                     continue                      # NAT works, but the ISP host runs no services
-                for dst in zone_hosts(dst_zone)[:2]:
+                # Two hosts per zone is enough variety, but the web server is always included:
+                # without it the baseline has no file transfers, and a user downloading
+                # something would later look anomalous to the model.
+                chosen = zone_hosts(dst_zone)[:2]
+                if web and web["zone"] == dst_zone and web["name"] not in {h["name"] for h in chosen}:
+                    chosen.append(web)
+                for dst in chosen:
                     if dst["name"] == src["name"]:
                         continue
                     jobs.append((src, "ping", f"timeout 5 ping -n -c 3 -i 0.3 {dst['ip']}"))
                     if web and dst["name"] == web["name"]:
                         jobs.append((src, "web", f"timeout 5 curl -s -o /dev/null http://{web['ip']}/"))
-                        jobs.append((src, "file", f"timeout 15 curl -s -o /dev/null http://{web['ip']}/file.bin"))
+                        jobs.append((src, "file", f"timeout 20 curl -s -o /dev/null http://{web['ip']}/file.bin"))
     # An admin checking a router: normal management traffic, and the "good login" counterpart
     # to the failed logins the threat engine looks for (T20).
     if "management" in lab.zones:

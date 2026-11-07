@@ -1,0 +1,82 @@
+# Grafana alerting for Fortress-Net (T24). GENERATED into /etc/grafana/provisioning/alerting/
+# by topology/services.py, mode 600, because it contains the Telegram bot token.
+#
+# The threat engine sends the *breach* alert itself (detection/alerts.py), because it can put
+# the score's reasons in the message. These rules cover what the engine cannot see: the network
+# itself. They go to the same Telegram chat.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: fortress-telegram
+    receivers:
+      - uid: fortress-telegram
+        type: telegram
+        settings:
+          bottoken: "{{ token }}"
+          chatid: "{{ chat }}"
+          message: "{{ '{{' }} len .Alerts.Firing {{ '}}' }} Fortress-Net alert(s) firing"
+
+policies:
+  - orgId: 1
+    receiver: fortress-telegram
+    group_by: [alertname]
+    group_wait: 10s
+    group_interval: 30s
+    repeat_interval: 1h
+
+groups:
+  - orgId: 1
+    name: fortress
+    folder: Fortress-Net
+    interval: 30s
+    rules:
+      - uid: fortress-link-down
+        title: Switch link down
+        condition: THRESHOLD
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: A link between two switches is down; the controller should have rerouted around it.
+        data:
+          - refId: QUERY
+            relativeTimeRange: {from: 120, to: 0}
+            datasourceUid: fortress-prometheus
+            model:
+              refId: QUERY
+              instant: true
+              expr: min(fortress_link_up)
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: QUERY
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      - uid: fortress-breach
+        title: Host in breach
+        condition: THRESHOLD
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: The threat engine scored a host at 70 or more; see docs/incidents for the report.
+        data:
+          - refId: QUERY
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: fortress-prometheus
+            model:
+              refId: QUERY
+              instant: true
+              expr: fortress_threat_hosts{band="breach"}
+          - refId: THRESHOLD
+            datasourceUid: __expr__
+            model:
+              refId: THRESHOLD
+              type: threshold
+              expression: QUERY
+              conditions:
+                - evaluator: {type: gt, params: [0]}

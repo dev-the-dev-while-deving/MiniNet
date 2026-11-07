@@ -32,7 +32,7 @@ mn -c >/dev/null 2>&1
 
 # 4. Prove it's clean.
 left=0
-procs=$(pgrep -a -f "[f]low_collector.py|[h]ttp.server 80 --bind|[s]uricata -c /etc/fortress|[r]syslogd -f /etc/fortress|[s]shd -f /etc/fortress|[c]haron-systemd|[r]yu-manager|[w]atchfrr|/usr/lib/frr/|[d]nsmasq --conf-file=/etc/fortress|[d]hcrelay|[b]usybox udhcpc|[m]nexec" || true)
+procs=$(pgrep -a -f "[e]xporter.py --port|[p]rometheus --config.file=/etc/fortress|[t]hreat_engine.py|[f]low_collector.py|[h]ttp.server 80 --bind|[s]uricata -c /etc/fortress|[r]syslogd -f /etc/fortress|[s]shd -f /etc/fortress|[c]haron-systemd|[r]yu-manager|[w]atchfrr|/usr/lib/frr/|[d]nsmasq --conf-file=/etc/fortress|[d]hcrelay|[b]usybox udhcpc|[m]nexec" || true)
 bridges=$(ovs-vsctl list-br)
 intfs=$(ip -o link show | grep -oE ': (s[0-9]+|c[0-9]+|mon0)-[^:@]+' || true)
 if [[ -n "$procs" ]];   then echo "❌ lab processes still running:"; echo "$procs"; left=1; else say "✅ no lab processes running"; fi

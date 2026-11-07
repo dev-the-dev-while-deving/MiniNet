@@ -1,0 +1,13 @@
+# Tells Grafana where our dashboards live (T23), copied into /etc/grafana/provisioning/dashboards/.
+# The JSON stays in the repo and is copied to this path at lab start, so the dashboard is part
+# of the project rather than something clicked together in a browser and lost.
+apiVersion: 1
+providers:
+  - name: Fortress-Net
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/fortress/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,9 @@
+# Grafana datasource for Fortress-Net (T23), copied into /etc/grafana/provisioning/datasources/.
+apiVersion: 1
+datasources:
+  - name: Fortress Prometheus
+    uid: fortress-prometheus          # the dashboard refers to this uid
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true

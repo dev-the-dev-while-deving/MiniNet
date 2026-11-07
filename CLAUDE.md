@@ -81,8 +81,26 @@ Optional: chrony (lab NTP server), threat-aware rerouting (T22). Ansible is drop
 - Router links are /30s from 10.0.0.0/24: r1–r2, r1–r3 (primary WAN), r2–r3 (backup WAN), r1–r4, r2–r4. OSPF area 0 with costs that keep r1–r3 primary, plus a floating static route to the FOB on r2.
 - IPsec (strongSwan) runs between r1 and r3 for 192.168.0.0/16 ↔ 172.16.70.0/24.
 
-## Threat scoring (T20)
-Score 0–100 = Isolation Forest anomaly + rules: Suricata alert +30, >50 ports probed +30, repeated failed SSH logins +25, scan then login attempts from the same host +15. Bands: 0–39 Normal (log), 40–69 Suspicious (dashboard), 70–100 Breach (Telegram alert + automatic block through the controller's REST API). Every score keeps its list of reasons.
+## Threat scoring (T20, implemented in `detection/threat_engine.py`)
+One score out of 100 per host, every 5 s, with the reasons attached. The table below is the
+contract; `threat_engine.py --self-check` proves it against worked examples.
+
+| Signal | Points | When |
+|--------|--------|------|
+| anomaly | up to 30 | the model's 0..1 verdict, scaled (D32) |
+| IDS signature | +30 | any Suricata alert from this host in the last 30 s |
+| port sweep | +30 | more than 50 different destination ports in one 5 s window |
+| refused connections | +15 | 20 or more SYNs unanswered, or resets coming back |
+| failed SSH logins | +25 | 5 or more in the last 120 s, from srv2's central log |
+| scan, then logins | +15 | correlation: the same host did both |
+| two sources agree | +15 | correlation: an IDS brute-force rule **and** the central log |
+
+Bands: **0–39 Normal** (logged), **40–69 Suspicious** (dashboard), **70–100 Breach** (block +
+incident report + Telegram). The weights are set so a breach always needs **two independent
+signals**: a lone Suricata alert is 30, and the model alone can reach 30 at most.
+
+The last three rows are additions to the roadmap's table (D33): without them a port sweep or a
+brute force could not reach 70 on rules alone, i.e. it would depend on the model being trained.
 
 ## Architecture decisions (T02b; full reasoning in `docs/decisions.md` D10–D15)
 Follow these in every network task. If one turns out wrong, change `docs/decisions.md` first, then the code.
@@ -95,15 +113,19 @@ Follow these in every network task. If one turns out wrong, change `docs/decisio
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`), T10 (c1-c2 aggregation via select groups, not an OVS bond; D24), T11 (`--mode proactive`: fast-failover groups; D25), T12 (HTB queues + controller set_queue; D26), T13 (controller drops never-talk pairs, r1/r2 stateful firewall, port security, rogue DHCP; D27), T14 (strongSwan r1<->r3 via VICI; D28), T15 (sshd per node, Management-only; rsyslog to srv2; D29), T17 (Suricata on both core mirrors; D30), T18 (flow collector, baseline traffic, srv3 web server; D31). Tags: `v0.1-base`, `v0.2-routing`, `v0.3-selfheal`, `v0.4-security`.
-- In progress: Part D + E (T17–T24, dev-the-dev-while-deving), one at a time.
-- Next free: T19 (anomaly model).
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`), T10 (c1-c2 aggregation via select groups, not an OVS bond; D24), T11 (`--mode proactive`: fast-failover groups; D25), T12 (HTB queues + controller set_queue; D26), T13 (controller drops never-talk pairs, r1/r2 stateful firewall, port security, rogue DHCP; D27), T14 (strongSwan r1<->r3 via VICI; D28), T15 (sshd per node, Management-only; rsyslog to srv2; D29), T17 (Suricata on both core mirrors; D30), T18 (flow collector, baseline traffic, srv3 web server; D31), T19 (Isolation Forest, 2.2% false positives; D32), T20 (explainable score with correlation; D33), T21 (block at the access port with expiry; D34), T23 (exporter, Prometheus, provisioned Grafana dashboard; D35), T24 (Telegram alert with reasons, incident reports; D36). Tag: `v0.6-detection`. Tags: `v0.1-base`, `v0.2-routing`, `v0.3-selfheal`, `v0.4-security`.
+- In progress: T22 (threat-aware rerouting, optional).
+- Next free: T25 (chaos test and results).
 
 ## Running the lab (from the Mac)
 - Start: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh [--small] [--standalone]`: clean slate, clock, config check, Ryu controller (unless `--standalone`), topology, FRR (OSPF + VRRP), NAT, DHCP/DNS, health check, then the Mininet CLI. `exit` in the CLI stops everything.
 - Automated test: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check`: same start, plus the disruptive VRRP failover test, then stop. Exit code = number of failed checks.
 - Stop / clean up after a crash: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`. It runs `mn -c` and prints ✅ for no lab processes, no OVS bridges, no lab interfaces.
 - Controller: log `/var/log/fortress/ryu/ryu.log`, status `curl -s localhost:8080/fortress/status` (in the VM), flows `sudo ovs-ofctl -O OpenFlow13 dump-flows s1`.
+- Detection and response (Part D/E): Suricata alerts `/var/log/fortress/ids1/eve.json`, traffic features `/var/log/fortress/collector/`, scores `/var/log/fortress/threat/state.json`, incident reports `docs/incidents/`. Score the lab now: `./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --once'`; check the scoring table: `--self-check`; see the Telegram message: `--test-alert`.
+- Block or unblock a host by hand: `curl -s -XPOST localhost:8080/fortress/block -d '{"ip": "192.168.40.66"}'` (and `/fortress/unblock`), or `GET /fortress/blocked`.
+- Monitoring: Grafana `http://<VM IP>:3000` (admin/admin, the Command Center dashboard is provisioned), Prometheus `:9090`, raw metrics `:9101/metrics`.
+- Train the anomaly model: `sudo python3 detection/baseline_traffic.py --minutes 30` then `~/venvs/fortress/bin/python detection/train_model.py`. Without a model the engine scores on its rules alone and says so.
 - In the CLI: `fail r1` / `recover r1` simulate a power loss; `admin1 ssh -i /etc/fortress/ssh/admin_key ubuntu@192.168.99.2` (admin SSH to r1); central logs in `/var/log/fortress/srv2/remote/`; `r1 vtysh -N r1 -c "show ip ospf neighbor"`; `cmd1 ping 172.16.70.10`.
 - The pieces: `topology/fortress_topo.py` (build), `topology/services.py` (daemons per node), `topology/render_configs.py` (templates in `configs/` → `/etc/fortress/<node>/`, `/etc/frr/<router>/`), `topology/checks.py` (health checks), `topology/labconfig.py` (values derived from `fortress.yaml`).
 - Gotcha: `mn -c` deletes `/tmp/*.log` and `/tmp/*.out`. Never log lab runs to those names.

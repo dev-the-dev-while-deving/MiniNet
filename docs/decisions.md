@@ -262,3 +262,55 @@ The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T
 - **Two collector instances, one each way:** the always-on one keeps `latest.json` for the threat engine; `baseline_traffic.py` starts a second one that writes the training CSV with the label `normal`. Two sniffers on one interface each get their own copy of every packet.
 - **`detection/features.py` holds the feature list and nothing else,** because the collector and the model run in the fortress venv (scapy, scikit-learn) while the topology and its checks run on the system Python that Mininet lives in. The first version had the checks import the collector, which pulled in scapy and failed.
 - **Measured:** 25 s of baseline gave 43 clean rows across 13 hosts, with **at most 3 distinct destination ports** per host per window. The scan in the same run touched 200. That gap is what the model and the port-sweep rule are built on.
+
+## T19: The anomaly model
+
+**D32. An Isolation Forest trained only on normal traffic, judged on normal traffic it has never seen.**
+- **Why this model:** it needs no attack examples. We have plenty of normal traffic and exactly two attack scenarios, so a classifier trained on labelled attacks would learn to recognise *those two* and nothing else. An Isolation Forest learns the shape of normal and reports how far a sample sits outside it, which is the honest version of "this host is behaving oddly".
+- **Scaling first matters.** `bytes_per_s` runs into the thousands while `distinct_dst_ports` is in single digits; without a `StandardScaler` the forest would effectively only look at the byte counts. The model is a two-step scikit-learn pipeline.
+- **The 0..1 scale is defined, not arbitrary.** 1.0 means "as far outside the baseline as the single most unusual thing in the training data"; anything beyond that is also 1.0. That is a sentence a student can defend, unlike a raw `decision_function` value.
+- **How it is evaluated, and why that is honest:** the baseline is split, and the model never sees the held-out part. Both parts are normal traffic, so *every* alarm on the held-out part is a false alarm and the false-positive rate is measurable without a single attack sample. `train_model.py` exits non-zero if it is above 5%.
+- **The model can never declare a breach by itself:** it contributes at most 30 of 100 points (D33).
+- **Measured:** trained on 1141 rows of a 15-minute baseline (1630 rows, 13 hosts), **2.2% false positives** on 489 held-out normal rows, against the 5% target. Mean anomaly score on normal traffic is 0.010, so normal traffic contributes essentially nothing to a score. The highest-scoring normal rows are srv3 serving large downloads (0.81, 67 packets/s), which is the right answer: that is the most unusual *legitimate* thing in the lab.
+- **A bug in the baseline that would have poisoned this:** the generator capped each zone's destinations at two hosts, which silently excluded srv3, the web server. The first baseline therefore contained no file transfers at all (peak 1.7 KB/s instead of 622 KB/s), and the model would have flagged every real download as an anomaly.
+- **No model is a supported state.** The engine says so on startup and scores on its rules alone. `detection/data/` is git-ignored: a model trained against one machine's lab is not evidence for another's, and it is regenerated from the baseline in two commands.
+
+## T20: The explainable threat engine
+
+**D33. One score, the reasons that produced it, and never a breach from a single source.**
+- Three independent sources, each written by a different part of the lab: Suricata's signatures (T17), the per-host traffic features and the model (T18, T19), and the failed SSH logins collected centrally on srv2 (T15). `detection/sources.py` reads all three; nothing else in the engine touches a file.
+- **The weights are chosen so that a breach needs two independent signals.** A lone Suricata alert is 30 points, and the model alone can reach 30: both land in the Normal band. The `--self-check` proves this with worked examples, including "one signal plus a maximal anomaly score" coming out at 60 (Suspicious).
+- **Correlation is the point of having three sources**, and it is worth points of its own: a host that sweeps ports *and then* tries passwords scores higher than one that did either, and an IDS brute-force signature backed by real failed logins in the central log scores higher than the signature alone.
+- **Different windows for different evidence:** traffic is summarised every 5 s, Suricata alerts are read over the last 30 s, and failed logins over the last 120 s, because a login attempt is a human-speed event and five of them do not fit in one 5-second window.
+- **`--self-check` is the test that matters.** The scoring is a pure function, so the whole table can be checked against worked examples without generating any traffic at all. That is also what makes the weights safe to tune later.
+- **A known false positive, handled by design:** our SSH connection-rate rule can fire on a burst of *legitimate* admin logins. That is 30 points, which is Normal. The engine only escalates when a second, independent source agrees, which is exactly why it is built this way.
+- **Measured:** a 200-port sweep from the Barracks attacker scored **93/100** on four independent signals (Suricata +30, 109 ports in one window +30, 304 refused connections +15, anomaly 0.59 +18), while every normal host in the same run stayed at 0.
+
+## T21: Automatic response
+
+**D34. Block the host at its own access port, and let the block expire.**
+- The drop rule goes in table 0 at priority 500, matching the host's port **and** its MAC, so the attacker's traffic never reaches the core at all and no other host's traffic is touched. The forwarding rules pointing at the host are removed too, so nobody can reach it either.
+- **The port is found from `fortress.yaml`**, not from what the controller has learned, so a host that has gone quiet can still be blocked.
+- **Blocking is idempotent.** The engine re-asks every few seconds while a host stays in breach; a repeat refreshes the expiry instead of reinstalling the rule and filling the history.
+- **Every block expires** (300 s by default, lifted by a timer in the controller), so a wrong block heals itself instead of needing someone at a keyboard. It can also be lifted immediately with `POST /fortress/unblock`.
+- **A real bug worth remembering:** lifting a block with OpenFlow's ordinary (non-strict) delete also removes rules whose match is *more specific* than the one given, which would have taken the port's own admit rule with it and left the host cut off for good. The unblock therefore uses a strict delete with the exact priority. The priority map now lives in `controller/pipeline.py` so this kind of overlap is visible in one place.
+- **The monitoring host is deliberately not blockable.** It is exempt from zone isolation (D27), and cutting it off would blind Prometheus and the dashboard at the moment they matter most.
+- **Measured:** the attacker was cut off at its own port **10 s after the sweep started** (the roadmap's target was 10 s), its pings stopped, the other Barracks host was unaffected, and `POST /fortress/unblock` restored it.
+
+## T23: The monitoring stack
+
+**D35. A pull exporter that re-reads its sources on every scrape.**
+- `monitoring/exporter.py` holds no state: each scrape re-reads the controller's REST API, the collector's latest window, the engine's scores and Suricata's alerts. A stale dashboard is therefore impossible, and the exporter can be restarted at any time without losing history, because Prometheus keeps that.
+- **Prometheus runs with our own config and data directory**, not the packaged service, so the scrape list is in the repo (`monitoring/prometheus.yml`) and the lab's data cannot be confused with anything else on the VM.
+- **The Grafana dashboard is provisioned from the repo**, not clicked together in a browser. `monitoring/grafana/dashboards/command-center.json` is copied in at lab start, so the dashboard is version-controlled and a teammate gets the same one.
+- The panels answer the three questions in order: is anything wrong now (breach, suspicious and blocked counts, switches and links up), what is the threat picture (score per host, alerts by kind), and what is the network doing (traffic per zone, connection attempts, ports touched per host).
+
+## T24: Alerts and incident reports
+
+**D36. The engine sends the breach alert, because it is the only thing that knows why.**
+- The roadmap's plan was a Telegram contact point in Grafana. The engine sends it instead: the message carries the score **and the reasons that produced it**, which Grafana's templating cannot reach. Grafana's own rules are still provisioned for what the engine cannot see (a link down) and as a second path for breaches.
+- **Grafana refuses to start if a Telegram contact point has an empty bot token** ("could not find Bot Token in settings"), which is the default state for anyone who has not made a bot yet. The alerting provisioning is therefore only written when a token is actually configured; without one, the dashboard still comes up and the engine still scores, blocks and writes reports.
+- **The token is never in the repo.** It is read from the environment or a git-ignored `.env` (`.env.example` documents how to get one from BotFather). The rendered Grafana file is mode 600 and owned by Grafana.
+- **Evidence before notification.** On a breach the engine blocks the host, writes `docs/incidents/<timestamp>-<host>.md`, and only then sends the message: containing the attack and recording what happened must not wait for a round trip to Telegram.
+- **One report and one alert per host per 300 s.** The score is recomputed every 5 s, and without this a single sustained breach would write a report and send a message twelve times a minute. The block is still refreshed on every pass.
+- Incident reports are git-ignored: they are real evidence, but they are regenerated on every test run, so they stay local and get attached to the report rather than committed.

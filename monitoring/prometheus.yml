@@ -1,0 +1,13 @@
+# prometheus.yml for Fortress-Net (T23).
+# Prometheus pulls every 5 s from our own exporter, which rebuilds the numbers from the
+# controller's REST API, the feature collector and the threat engine on each scrape
+# (monitoring/exporter.py). Started by scripts/start_all.sh with
+#   prometheus --config.file=/etc/fortress/prometheus.yml --storage.tsdb.path=/var/lib/fortress/prometheus
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: fortress
+    static_configs:
+      - targets: ["127.0.0.1:9101"]

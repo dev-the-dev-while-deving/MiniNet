@@ -10,6 +10,7 @@ OpenFlow 1.3 pipeline on every base switch (c1, c2, s1..s5):
                      server replies unless it is srv1's port; trunk/link port -> must be tagged;
                      ids/unknown ports -> no rule -> dropped. IPv6 is dropped (the lab is IPv4).
   table 1  POLICY    zone isolation (T13): drop IPv4 between zones that may never talk.
+                     Table 0 also holds the per-host block rules the threat engine asks for (T21).
   table 2  QOS       pick an output queue by traffic class (T12). For now: go to table 3.
   table 3  FORWARD   (VLAN, destination MAC) -> output port, installed by this app.
                      No match -> send the packet to the controller (packet-in).
@@ -33,6 +34,7 @@ sys.path.insert(0, str(HERE))                       # vlan.py, netgraph.py, path
 sys.path.insert(0, str(HERE.parent / "topology"))   # labconfig.py (reads config/fortress.yaml)
 
 from ryu.app.wsgi import WSGIApplication
+from ryu.lib import hub
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, DEAD_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
@@ -44,12 +46,13 @@ from ryu.topology import event as topo_event
 import paths
 from labconfig import Lab
 from netgraph import NetGraph
+from pipeline import (PRIO_DHCP_GUARD, PRIO_DROP_IPV6, PRIO_FORWARD, PRIO_ISOLATION,
+                      PRIO_MONITOR, PRIO_PORT, PRIO_QOS_BULK, PRIO_QOS_MISSION,
+                      T_FORWARD, T_INGRESS, T_POLICY, T_QOS, VID_PRESENT)
 from rest_api import APP_KEY, FortressRest
+from response import Responder
 from vlan import PortMap
 
-T_INGRESS, T_POLICY, T_QOS, T_FORWARD = 0, 1, 2, 3
-VID_PRESENT = 0x1000          # OpenFlow's "this frame has a VLAN tag" bit in vlan_vid
-PRIO_FORWARD = 10
 LOG_DIR = Path(os.environ.get("FORTRESS_LOG_DIR", "/var/log/fortress/ryu"))
 
 
@@ -80,7 +83,15 @@ class FortressController(app_manager.RyuApp):
         self.dhcp_server = self.lab.host_with_role("dhcp-dns")["name"]
         self.mac_names[self.lab.monitor["mac"]] = self.lab.monitor["name"]
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        # T21: blocking and unblocking hosts, plus a timer so a block heals itself.
+        self.responder = Responder(self)
+        hub.spawn(self._expire_blocks)
         kwargs["wsgi"].register(FortressRest, {APP_KEY: self})
+
+    def _expire_blocks(self):
+        while True:
+            hub.sleep(2)
+            self.responder.expire()
 
     # --- small OpenFlow helpers ------------------------------------------------------
     def add_flow(self, dp, table, priority, match, actions=None, goto=None):
@@ -92,9 +103,16 @@ class FortressController(app_manager.RyuApp):
             inst.append(p.OFPInstructionGotoTable(goto))
         dp.send_msg(p.OFPFlowMod(datapath=dp, table_id=table, priority=priority, match=match, instructions=inst))
 
-    def delete_flows(self, dp, table, match):
+    def delete_flows(self, dp, table, match, priority=None):
+        """Delete rules in a table. Without a priority this is OpenFlow's non-strict delete,
+        which also removes rules whose match is *more specific* than the one given; with a
+        priority it deletes only the exact rule (needed when lifting a block, T21, so the
+        port's ordinary admit rule survives)."""
         p, ofp = dp.ofproto_parser, dp.ofproto
-        dp.send_msg(p.OFPFlowMod(datapath=dp, table_id=table, command=ofp.OFPFC_DELETE,
+        strict = priority is not None
+        dp.send_msg(p.OFPFlowMod(datapath=dp, table_id=table,
+                                 command=ofp.OFPFC_DELETE_STRICT if strict else ofp.OFPFC_DELETE,
+                                 priority=priority or 0,
                                  out_port=ofp.OFPP_ANY, out_group=ofp.OFPG_ANY, match=match))
 
     def packet_out(self, dp, data, actions):
@@ -114,7 +132,7 @@ class FortressController(app_manager.RyuApp):
         self.dps[dp.id] = dp
         self.net.add_switch(dp.id)
         # The lab is IPv4-only; dropping IPv6 early saves the controller from hosts' IPv6 chatter.
-        self.add_flow(dp, T_INGRESS, 200, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IPV6))
+        self.add_flow(dp, T_INGRESS, PRIO_DROP_IPV6, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IPV6))
         self.add_flow(dp, T_POLICY, 0, p.OFPMatch(), goto=T_QOS)
         self.install_policy(dp)
         self.add_flow(dp, T_QOS, 0, p.OFPMatch(), goto=T_FORWARD)
@@ -134,9 +152,9 @@ class FortressController(app_manager.RyuApp):
         mask = lambda z: (str(self.lab.zones[z]["net"].network_address), str(self.lab.zones[z]["net"].netmask))
         mon = self.lab.monitor["ip"]
         for field in ("ipv4_src", "ipv4_dst"):
-            self.add_flow(dp, T_POLICY, 60, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, **{field: mon}), goto=T_QOS)
+            self.add_flow(dp, T_POLICY, PRIO_MONITOR, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP, **{field: mon}), goto=T_QOS)
         for a, b in self.lab.blocked_pairs():
-            self.add_flow(dp, T_POLICY, 50, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,
+            self.add_flow(dp, T_POLICY, PRIO_ISOLATION, p.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,
                                                        ipv4_src=mask(a), ipv4_dst=mask(b)))   # no actions = drop
 
     def install_qos(self, dp):
@@ -147,7 +165,7 @@ class FortressController(app_manager.RyuApp):
         with HTB queues (the topology sets those up)."""
         p = dp.ofproto_parser
         for cname, c in self.lab.qos["classes"].items():
-            prio = 30 if cname == "mission" else 20
+            prio = PRIO_QOS_MISSION if cname == "mission" else PRIO_QOS_BULK
             for z in c["zones"]:
                 if z not in self.lab.zones:
                     continue
@@ -176,17 +194,17 @@ class FortressController(app_manager.RyuApp):
             # Untagged frame from the host that belongs on this port: tag it with the port's VLAN.
             # Port security (T13): only that host's MAC (fixed in fortress.yaml, D16) is accepted,
             # so a different device on the port, or a spoofed MAC, gets no rule and is dropped.
-            self.add_flow(dp, T_INGRESS, 100, p.OFPMatch(in_port=port_no, vlan_vid=0, eth_src=role["mac"]),
+            self.add_flow(dp, T_INGRESS, PRIO_PORT, p.OFPMatch(in_port=port_no, vlan_vid=0, eth_src=role["mac"]),
                           [p.OFPActionPushVlan(ether_types.ETH_TYPE_8021Q),
                            p.OFPActionSetField(vlan_vid=VID_PRESENT | role["vlan"])], goto=T_POLICY)
             if role["peer"] != self.dhcp_server:
                 # Rogue DHCP protection (T13): only srv1's port may send DHCP server replies
                 # (UDP source port 67). The relays on r1/r2 arrive on trunk ports and are allowed.
-                self.add_flow(dp, T_INGRESS, 150, p.OFPMatch(in_port=port_no, eth_type=ether_types.ETH_TYPE_IP,
+                self.add_flow(dp, T_INGRESS, PRIO_DHCP_GUARD, p.OFPMatch(in_port=port_no, eth_type=ether_types.ETH_TYPE_IP,
                                                              ip_proto=17, udp_src=67))
         elif role["kind"] in ("trunk", "link"):
             # Router trunks and switch links carry tagged frames only.
-            self.add_flow(dp, T_INGRESS, 100, p.OFPMatch(in_port=port_no, vlan_vid=(VID_PRESENT, VID_PRESENT)),
+            self.add_flow(dp, T_INGRESS, PRIO_PORT, p.OFPMatch(in_port=port_no, vlan_vid=(VID_PRESENT, VID_PRESENT)),
                           goto=T_POLICY)
         # ids and unknown ports get no rule: everything they send is dropped.
 
@@ -461,6 +479,7 @@ class FortressController(app_manager.RyuApp):
             "installed": len(self.installed),
             "ff_groups": len(self.groups),
             "reroutes": len(self.reroutes),
+            **self.responder.status(),
             "last_reroute": self.reroutes[-1] if self.reroutes else None,
             "time": time.time(),
         }

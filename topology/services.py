@@ -215,6 +215,103 @@ def wait_for_vrrp(net, lab, timeout=20):
     return timeout
 
 
+# --- Monitoring stack (T23) -----------------------------------------------------------
+EXPORTER_PORT = 9101
+PROMETHEUS_PORT = 9090
+PROM_DATA = Path("/var/lib/fortress/prometheus")
+GRAFANA_PROVISION = Path("/etc/grafana/provisioning")
+
+
+def start_monitoring(net, lab, prometheus=True, grafana=True):
+    """Our exporter, then Prometheus, then Grafana (T23).
+
+    All three run in the VM's root namespace: the exporter reads the same files the threat
+    engine does and asks the controller's REST API, and Prometheus and Grafana only ever talk
+    to the exporter (decisions D5, D12). Grafana's datasource and our dashboard are provisioned
+    from files in the repo, so the dashboard is version-controlled rather than clicked together.
+    """
+    import shutil
+    import subprocess
+    node_dirs("monitoring")
+    log = open(LOG / "monitoring" / "exporter.log", "w")
+    proc = subprocess.Popen([fortress_python(), str(ROOT / "monitoring" / "exporter.py"),
+                             "--port", str(EXPORTER_PORT)],
+                            stdout=log, stderr=subprocess.STDOUT,
+                            env={**os.environ, "OPENSSL_armcap": "0"}, start_new_session=True)
+    (RUN / "monitoring" / "exporter.pid").write_text(f"{proc.pid}\n")
+
+    if prometheus:
+        conf = ETC / "prometheus.yml"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / "monitoring" / "prometheus.yml", conf)
+        PROM_DATA.mkdir(parents=True, exist_ok=True)
+        plog = open(LOG / "monitoring" / "prometheus.log", "w")
+        pproc = subprocess.Popen(["prometheus", f"--config.file={conf}",
+                                  f"--storage.tsdb.path={PROM_DATA}",
+                                  f"--web.listen-address=:{PROMETHEUS_PORT}"],
+                                 stdout=plog, stderr=subprocess.STDOUT, start_new_session=True)
+        (RUN / "monitoring" / "prometheus.pid").write_text(f"{pproc.pid}\n")
+
+    if grafana and GRAFANA_PROVISION.is_dir():
+        src = ROOT / "monitoring" / "grafana"
+        dashboards = ETC / "grafana" / "dashboards"
+        dashboards.mkdir(parents=True, exist_ok=True)
+        for f in (src / "dashboards").glob("*.json"):
+            shutil.copy(f, dashboards / f.name)
+        for d in (ETC, ETC / "grafana", dashboards):
+            d.chmod(0o755)                       # Grafana runs as its own user and must read these
+        shutil.copy(src / "datasource.yaml", GRAFANA_PROVISION / "datasources" / "fortress.yaml")
+        shutil.copy(src / "dashboards.yaml", GRAFANA_PROVISION / "dashboards" / "fortress.yaml")
+        # Alerting (T24). Rendered rather than copied, because it carries the Telegram token:
+        # it is written 600 and owned by Grafana, and the token itself lives in .env (D32).
+        # Only written when a token is actually configured: Grafana REFUSES TO START if a
+        # Telegram contact point has an empty token ("could not find Bot Token in settings"),
+        # which would take the whole dashboard down for anyone who hasn't made a bot yet.
+        import alerts
+        from jinja2 import Template
+        cfg = alerts.config()
+        out = GRAFANA_PROVISION / "alerting" / "fortress.yaml"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if cfg["token"] and cfg["chat"]:
+            out.write_text(Template((src / "alerting.yaml.j2").read_text()).render(**cfg))
+            out.chmod(0o600)
+            try:
+                shutil.chown(out, user="grafana")
+            except (LookupError, PermissionError):
+                pass
+        else:
+            out.unlink(missing_ok=True)
+            info("*** no Telegram token in .env: Grafana's alert rules are skipped "
+                 "(the threat engine still scores, blocks and writes reports)\n")
+        subprocess.run(["systemctl", "restart", "grafana-server"], capture_output=True)
+
+
+def http_get(url, timeout=3):
+    """Small helper for the checks: GET a URL and return (status, text)."""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, r.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+    except (urllib.error.URLError, OSError) as e:
+        return 0, str(e)
+
+
+def prometheus_query(expr, port=PROMETHEUS_PORT):
+    """Run an instant PromQL query. Returns the list of results (empty if Prometheus is down)."""
+    import json
+    import urllib.parse
+    status, body = http_get(f"http://127.0.0.1:{port}/api/v1/query?query={urllib.parse.quote(expr)}")
+    if status != 200:
+        return []
+    try:
+        return json.loads(body)["data"]["result"]
+    except (ValueError, KeyError):
+        return []
+
+
 # --- Simulated failures (demo scenario 2, CLI commands `fail` / `recover`) -----------
 def fail_node(net, name):
     """Simulate a power loss: take every interface of a node down. Its processes keep
@@ -367,6 +464,68 @@ def latest_features(path=COLLECTOR_LATEST):
     return sources.latest_features(path)
 
 
+# --- Threat engine (T20) and its response (T21) ---------------------------------------
+def start_engine(net, lab, interval=5, block=True):
+    """detection/threat_engine.py --watch in the VM's root namespace.
+
+    It belongs there, not in a Mininet host: it reads the files the other parts write
+    (eve.json, latest.json, srv2's logs) and calls the controller's REST API on 127.0.0.1,
+    all of which live in the root namespace (decisions D12).
+    """
+    import subprocess
+    node_dirs("threat")
+    args = [fortress_python(), str(ROOT / "detection" / "threat_engine.py"),
+            "--watch", "--interval", str(interval)] + ([] if block else ["--no-block"])
+    log = open(LOG / "threat" / "engine.log", "w")
+    proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
+                            env={**os.environ, "OPENSSL_armcap": "0"}, start_new_session=True)
+    (RUN / "threat" / "engine.pid").write_text(f"{proc.pid}\n")
+    return proc.pid
+
+
+def stop_engine():
+    """Stop the threat engine (used by the scenario check, which needs to lift a block without
+    the engine immediately acting on the same still-fresh evidence)."""
+    import os
+    import signal
+    pid_file = RUN / "threat" / "engine.pid"
+    try:
+        os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+    except (OSError, ValueError):
+        return False
+    pid_file.unlink(missing_ok=True)
+    return True
+
+
+def threat_state(path=None):
+    """The newest scores the engine wrote: {"time", "hosts": [...], "bands": {...}}."""
+    import json
+    path = Path(path) if path else LOG / "threat" / "state.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {"time": 0, "hosts": [], "bands": {}}
+
+
+def controller_blocked():
+    """The hosts the controller currently has cut off (T21)."""
+    return (controller_status() or {}).get("blocked", [])
+
+
+def controller_post(path, payload):
+    """POST to the controller's REST API, e.g. controller_post("unblock", {"ip": ...})."""
+    import json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"{REST}/{path}", data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=4) as r:
+            return json.loads(r.read())
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return {"error": str(e)}
+
+
 # --- SSH and central logging (T15) ----------------------------------------------------
 SSH_DIR = ETC / "ssh"
 
@@ -442,12 +601,17 @@ def start(net, lab):
     info(f"*** IDS engine started after {start_ids(net, lab):.1f} s\n")
     info("*** Traffic feature collector on ids1\n")
     start_collector(net, lab)
+    info("*** Threat engine (scores every 5 s, blocks on a breach)\n")
+    start_engine(net, lab)
+    info("*** Monitoring: exporter, Prometheus and Grafana\n")
+    start_monitoring(net, lab)
 
 
 def stop(net=None, lab=None):
     """Stop every daemon we started, using the PID files under /var/run/fortress.
     Safe to call when nothing is running (stop_all.sh calls it after a crash)."""
     import subprocess
+    subprocess.run(["systemctl", "stop", "grafana-server"], capture_output=True)
     # FRR instances: one watchfrr per router; frrinit.sh stops it and all its daemons.
     for watchfrr in sorted(Path("/var/run/frr").glob("*/watchfrr.pid")):
         subprocess.run([FRRINIT, "stop", watchfrr.parent.name], capture_output=True)

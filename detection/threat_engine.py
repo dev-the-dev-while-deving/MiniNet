@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "detection"))
 sys.path.insert(0, str(ROOT / "topology"))
 
+import alerts
 import anomaly
 import sources
 from features import FEATURES
@@ -172,36 +173,79 @@ def block_host(ip, reason, seconds=300):
 
 
 def write_incident(result, blocked, folder=ROOT / "docs" / "incidents"):
-    """One markdown file per breach: timeline, score reasons, evidence, action taken (T24)."""
+    """One markdown file per breach: what happened, why we think so, the evidence, and what was
+    done about it (T24). Written before the alert goes out, so the report exists even if the
+    network to Telegram does not."""
     from datetime import datetime, timezone
     stamp = datetime.now(timezone.utc)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{stamp.strftime('%Y%m%dT%H%M%SZ')}-{result['host']}.md"
     ev = result["evidence"]
-    lines = [f"# Incident: {result['host']} ({result['ip']}) scored {result['score']}/100", "",
+    lines = [f"# Incident: {result['host']} scored {result['score']}/100",
+             "",
              f"- **When:** {stamp.isoformat(timespec='seconds')}",
-             f"- **Level:** {result['band'].upper()}",
-             f"- **Host:** {result['host']} ({result['ip']})", "",
-             "## Why the score is what it is", ""]
-    lines += [f"{i}. {r}" for i, r in enumerate(result["reasons"], 1)]
-    lines += ["", "## Evidence", "",
-              f"- Suricata alerts: {', '.join(ev['alerts']) or 'none'}",
-              f"- Failed SSH logins in the window: {ev['failed_logins']}",
-              f"- Anomaly score from the model: {ev['anomaly'] if ev['anomaly'] is not None else 'no model loaded'}",
-              "- Traffic in the 5 s window:", ""]
-    lines += [f"  | {f} | {ev['features'].get(f)} |" for f in FEATURES] if ev["features"] else ["  (no traffic)"]
-    lines += ["", "## Action taken", "",
-              f"- {'Blocked at its access port by the SDN controller' if blocked and not blocked.get('error') else 'No block (see below)'}",
-              f"- Controller reply: `{json.dumps(blocked)}`" if blocked else "- No block attempted", ""]
+             f"- **Level:** {result['band'].upper()} (70 or more is a breach)",
+             f"- **Host:** {result['host']} ({result.get('ip', 'unknown address')})",
+             "",
+             "## Why the score is what it is",
+             ""]
+    lines += [f"{i}. {reason}" for i, reason in enumerate(result["reasons"], 1)]
+    lines += ["",
+              f"Each line is one independent signal. The score is their sum, capped at 100; "
+              f"this one rests on {len(result['signals'])} signal(s).",
+              "",
+              "## Evidence",
+              "",
+              f"- **Suricata alerts:** {', '.join(ev['alerts']) if ev['alerts'] else 'none'}",
+              f"- **Failed SSH logins in the window:** {ev['failed_logins']}",
+              f"- **Anomaly score from the model:** "
+              f"{ev['anomaly'] if ev['anomaly'] is not None else 'no model loaded (rules only)'}",
+              ""]
+    if ev["features"]:
+        lines += ["Traffic in the 5 second window:", "", "| feature | value |", "|---------|-------|"]
+        lines += [f"| {f} | {ev['features'].get(f)} |" for f in FEATURES]
+    else:
+        lines.append("The host sent nothing in the measured window.")
+    lines += ["", "## Action taken", ""]
+    if blocked and not blocked.get("error"):
+        lines += [f"- Cut off at its own access port **{blocked['port']}** on {blocked['switch']} "
+                  f"by the SDN controller, for {blocked.get('seconds', 0):.0f} seconds.",
+                  "- Nothing else on the network was changed: no other host's traffic was touched.",
+                  "- To lift it early: "
+                  f"`curl -s -XPOST localhost:8080/fortress/unblock -d '{{\"ip\": \"{result.get('ip')}\"}}'`"]
+    elif blocked:
+        lines.append(f"- **Not blocked:** {blocked['error']}")
+    else:
+        lines.append("- Not blocked: the engine was started with --no-block.")
     path.write_text("\n".join(lines) + "\n")
     return path
 
 
-def respond(result, do_block=True):
-    """What happens on a breach: block the host, then write the incident report."""
+# A host in breach is scored again every few seconds. The block is refreshed each time (the
+# controller treats a repeat as "keep it blocked"), but the paperwork happens once: one incident
+# report and one Telegram message per host per cooldown, instead of twelve a minute.
+REPORT_COOLDOWN = 300
+_reported = {}                # ip -> when we last wrote a report and sent an alert
+
+
+def respond(result, do_block=True, notify=True):
+    """What happens on a breach: block the host, write the report, then alert the phone.
+
+    In that order on purpose. Containing the host and recording the evidence must not wait for
+    a network round trip to Telegram, which may be slow or unreachable.
+    """
     reason = "; ".join(result["reasons"])
     blocked = block_host(result["ip"], reason) if do_block else None
-    return blocked, write_incident(result, blocked)
+    if time.time() - _reported.get(result["ip"], 0) <= REPORT_COOLDOWN:
+        return blocked, None, None          # already reported; the block above is refreshed
+    _reported[result["ip"]] = time.time()
+    report = write_incident(result, blocked)
+    alert = None
+    if notify:
+        text, outcome = alerts.notify(result, blocked, report)
+        alert = {"outcome": outcome, "text": text}
+        (STATE_DIR / "last_alert.txt").write_text(text + f"\n\n-- {json.dumps(outcome)}\n")
+    return blocked, report, alert
 
 
 # --- running -------------------------------------------------------------------------------
@@ -227,9 +271,11 @@ def once(lab, bundle, do_block=True, quiet=False):
     responded = []
     for s in scores:
         if s["band"] == "breach":
-            blocked, path = respond(s, do_block)
+            blocked, path, alert = respond(s, do_block)
             s["blocked"] = blocked
-            responded.append(path)
+            s["alert"] = (alert or {}).get("outcome")
+            if path:
+                responded.append(path)
     record(scores, responded)
     if not quiet:
         for s in scores:
@@ -292,11 +338,26 @@ def main():
     p.add_argument("--interval", type=float, default=5.0)
     p.add_argument("--model", default=str(anomaly.DEFAULT_MODEL))
     p.add_argument("--no-block", action="store_true", help="score and report, but never block")
+    p.add_argument("--test-alert", action="store_true",
+                   help="compose an example breach alert, print it, and send it if a token is set")
     p.add_argument("--small", action="store_true")
     a = p.parse_args()
 
     if a.self_check:
         sys.exit(1 if self_check() else 0)
+
+    if a.test_alert:
+        example = score_host("bar3", {"packets_per_s": 300, "bytes_per_s": 20000, "new_conns_per_s": 150,
+                                      "distinct_dst_ports": 200, "distinct_dst_hosts": 1,
+                                      "failed_handshakes": 190},
+                             [{"kind": "scan", "signature": "FORTRESS scan: TCP SYN sweep (possible nmap -sS)"}],
+                             [], 0.9)
+        example["ip"] = "192.168.40.66"
+        text, outcome = alerts.notify(example, {"port": "s4-bar3", "switch": "s4", "seconds": 300},
+                                      "docs/incidents/example.md")
+        print(text)
+        print(f"\n-> {json.dumps(outcome)}")
+        sys.exit(0)
 
     lab = Lab(small=a.small)
     bundle = anomaly.load(a.model)
@@ -304,8 +365,13 @@ def main():
         print(f"no model at {a.model}: scoring on the rules alone (train one with train_model.py)",
               file=sys.stderr)
     if a.watch:
+        # One bad window must not stop the engine: a demo with no scoring is worse than a
+        # demo with a gap, so the error is logged and the next pass tries again.
         while True:
-            once(lab, bundle, not a.no_block, quiet=True)
+            try:
+                once(lab, bundle, not a.no_block, quiet=True)
+            except Exception as e:                       # noqa: BLE001  (deliberate: keep running)
+                print(f"scoring pass failed, carrying on: {e!r}", file=sys.stderr, flush=True)
             time.sleep(a.interval)
     once(lab, bundle, not a.no_block)
 

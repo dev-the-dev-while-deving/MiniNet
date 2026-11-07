@@ -89,7 +89,7 @@ class Lab:
         mon = self.cfg["monitor"]
         mz = self.zones[mon["zone"]]
         self.monitor = {
-            "name": mon["host"], "ip": mon["ip"], "prefixlen": mz["prefixlen"],
+            "name": mon["host"], "ip": mon["ip"], "zone": mon["zone"], "prefixlen": mz["prefixlen"],
             "mac": mac_for(mon["ip"]), "gateway": mz["vip"],
             "switch": mz["switch"], "vlan": mz["vlan"],
         }

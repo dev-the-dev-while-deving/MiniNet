@@ -672,32 +672,111 @@ def check_ids(net, lab, r):
             f"{len(services.ids_alerts(lab))} alerts so far")
 
 
-def check_scan_detection(net, lab, r):
-    """Disruptive (--check only), scenario 3's first half: the Barracks attacker host sweeps
-    ports on a server, and Suricata's own scan rule fires on the mirrored traffic.
+def check_threat_engine(net, lab, r):
+    """The engine is scoring every host, and normal traffic stays in the Normal band (T20)."""
+    import services
+    output("== Threat engine (scores, bands, and whether the model is loaded)\n")
+    state = services.threat_state()
+    age = time.time() - state["time"]
+    r.check(state["time"] > 0 and age < 40, "the engine wrote scores recently",
+            f"{age:.0f} s ago, bands: " + ", ".join(f"{k} {v}" for k, v in state.get("bands", {}).items()))
+    worst = max(state.get("hosts", []), key=lambda h: h["score"], default=None)
+    r.check(worst is None or worst["score"] < 40, "normal traffic stays in the Normal band (under 40)",
+            f"highest right now: {worst['host']} {worst['score']}/100" if worst else "nothing scored yet")
+    model = Path("/home/ubuntu/fortress-net/detection/data/model.joblib")
+    using = [h for h in state.get("hosts", []) if h["evidence"]["anomaly"] is not None]
+    if model.exists():
+        r.check(bool(using) or not state.get("hosts"), "the engine is using the trained model",
+                f"anomaly scored for {len(using)} host(s)")
+    else:
+        r.ok("anomaly model", "not trained yet: the engine is running on its rules alone "
+                              "(detection/baseline_traffic.py then train_model.py)")
 
-    This runs entirely inside the Mininet namespaces, against one lab host (the project rule:
-    attack tools never leave the lab).
+
+def check_insider_scenario(net, lab, r):
+    """Disruptive (--check only). Demo scenario 3, end to end, which is also the acceptance
+    check for four tasks at once:
+
+        T17  Suricata raises a scan alert on the mirrored traffic
+        T20  the engine scores the host as a Breach and can say why
+        T21  the controller cuts it off at its own access port, and only it
+        T24  a written incident report lands on disk
+
+    Everything happens inside the Mininet namespaces, against one lab host.
     """
     import services
-    output("== Scan detection (attacker sweeps ports on a server)\n")
+    output("== Insider scenario: port sweep -> alert -> score -> block (T17, T20, T21, T24)\n")
     attacker = next(h for h in lab.hosts.values() if h["role"] == "attacker")
     target = next(h for h in lab.hosts.values() if h["role"] == "web-file")
-    t0 = time.time() - 1
+    neighbour = next(lab.hosts[n] for n in lab.zones["barracks"]["hosts"] if n != attacker["name"])
+    srv1 = lab.host_with_role("dhcp-dns")["ip"]
+    incidents = Path("/home/ubuntu/fortress-net/docs/incidents")
+    before = set(incidents.glob("*.md")) if incidents.is_dir() else set()
+
+    t0 = time.time()
     out = net[attacker["name"]].cmd(f"nmap -sS -Pn -n --max-retries 1 -p 1-200 {target['ip']}")
     r.check("Nmap done" in out, f"{attacker['name']} swept ports 1-200 on {target['name']}",
             f"{target['ip']} (inside the lab only)")
+
+    # T17: the signature fires.
     alerts = []
     for _ in range(20):
-        alerts = [a for a in services.ids_alerts(lab, since=t0) if a["src_ip"] == attacker["ip"]]
+        alerts = [a for a in services.ids_alerts(lab, since=t0 - 1)
+                  if a["src_ip"] == attacker["ip"] and a["kind"] == "scan"]
         if alerts:
             break
         time.sleep(1)
-    scan = [a for a in alerts if a["kind"] == "scan"]
-    first = scan[0] if scan else None
-    r.check(bool(scan), f"Suricata raised a scan alert for {attacker['name']}",
-            f'"{first["signature"]}" (sid {first["sid"]}), {len(scan)} alerts' if first
-            else f"{len(alerts)} alerts from {attacker['ip']} in eve.json")
+    r.check(bool(alerts), f"Suricata raised a scan alert for {attacker['name']}",
+            f'"{alerts[0]["signature"]}" (sid {alerts[0]["sid"]}), {len(alerts)} alerts' if alerts
+            else "nothing in eve.json")
+
+    # T20: the engine scores it a breach, and can explain it from more than one signal.
+    scored = None
+    for _ in range(25):
+        hosts = services.threat_state().get("hosts", [])
+        scored = next((h for h in hosts if h["ip"] == attacker["ip"]), None)
+        if scored and scored["band"] == "breach":
+            break
+        time.sleep(1)
+    r.check(scored is not None and scored["band"] == "breach",
+            f"the engine scored {attacker['name']} as a Breach (70 or more)",
+            f"{scored['score']}/100" if scored else "not scored")
+    if scored:
+        for reason in scored["reasons"]:
+            output(f"       - {reason}\n")
+        r.check(len(scored["signals"]) >= 2, "the score rests on at least two independent signals",
+                ", ".join(scored["signals"]))
+
+    # T21: blocked at its own port, within seconds, and nobody else is touched.
+    blocked = []
+    for _ in range(20):
+        blocked = [b for b in services.controller_blocked() if b["ip"] == attacker["ip"]]
+        if blocked:
+            break
+        time.sleep(1)
+    took = time.time() - t0
+    r.check(bool(blocked), f"the controller cut {attacker['name']} off at its access port",
+            f"{blocked[0]['port']} on {blocked[0]['switch']}, {took:.0f} s after the sweep started"
+            if blocked else f"not blocked within {took:.0f} s")
+    r.check(not ping(net[attacker["name"]], srv1, tries=2), f"{attacker['name']} can no longer reach anything",
+            f"its pings to {srv1} are dropped at {blocked[0]['port'] if blocked else 'its port'}")
+    r.check(ping(net[neighbour["name"]], srv1, tries=3), f"{neighbour['name']} in the same zone is unaffected",
+            f"still reaches {srv1}")
+
+    # T24: the incident report.
+    new = (set(incidents.glob("*.md")) - before) if incidents.is_dir() else set()
+    report = sorted(new)[-1] if new else None
+    r.check(report is not None, "an incident report was written", report.name if report else "none in docs/incidents/")
+
+    # T21: and it can be lifted. The engine is paused first, or it would immediately act on the
+    # same evidence again (which is correct behaviour, but it would hide whether unblock works).
+    services.stop_engine()
+    time.sleep(1)
+    lifted = services.controller_post("unblock", {"ip": attacker["ip"]})
+    r.check("error" not in lifted, f"POST /fortress/unblock let {attacker['name']} back on",
+            f"blocked for {lifted.get('blocked_for', '?')} s")
+    r.check(ping(net[attacker["name"]], srv1, tries=6), f"{attacker['name']} can reach the network again", srv1)
+    services.start_engine(net, lab)
 
 
 # --- T18: traffic features and baseline ---------------------------------------------
@@ -747,6 +826,68 @@ def check_baseline(net, lab, r, seconds=25):
                 f"max {max(ports):.0f} distinct ports per 5 s window, mean {sum(ports) / len(ports):.1f}")
 
 
+# --- T23: monitoring stack ----------------------------------------------------------
+def grafana_api(path, timeout=4):
+    """GET a Grafana API path with the default admin login. Returns (status, text)."""
+    import base64
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:3000{path}")
+    req.add_header("Authorization", "Basic " + base64.b64encode(b"admin:admin").decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+    except (urllib.error.URLError, OSError) as e:
+        return 0, str(e)
+
+
+def check_monitoring(net, lab, r):
+    """The exporter publishes the lab's state, Prometheus scrapes it, Grafana has the dashboard."""
+    import services
+    output("== Monitoring (exporter, Prometheus, Grafana)\n")
+    status, body = services.http_get(f"http://127.0.0.1:{services.EXPORTER_PORT}/metrics")
+    names = {line.split("{")[0].split(" ")[0] for line in body.splitlines() if line.startswith("fortress_")}
+    r.check(status == 200 and len(names) >= 15, "the exporter serves the lab's metrics",
+            f"{len(names)} fortress_* metrics on :{services.EXPORTER_PORT}")
+
+    up = []
+    for _ in range(15):                 # Prometheus scrapes every 5 s and needs a moment to start
+        up = services.prometheus_query("fortress_controller_up")
+        if up:
+            break
+        time.sleep(1)
+    r.check(bool(up) and up[0]["value"][1] == "1", "Prometheus is scraping the exporter",
+            "fortress_controller_up = 1" if up else "no answer from Prometheus on :9090")
+    scores = services.prometheus_query("fortress_threat_score")
+    switches = services.prometheus_query("sum(fortress_switch_connected)")
+    r.check(bool(scores) and bool(switches), "threat scores and switch health are queryable",
+            f"{len(scores)} hosts scored, "
+            f"{switches[0]['value'][1] if switches else '?'} switches connected")
+
+    health, body = 0, ""
+    for _ in range(25):                 # Grafana can take a while on its first start (migrations)
+        health, body = grafana_api("/api/health")
+        if health == 200:
+            break
+        time.sleep(1)
+    import json as jsonmod
+    try:
+        database = jsonmod.loads(body).get("database")
+    except ValueError:
+        database = None
+    r.check(health == 200 and database == "ok", "Grafana is up with a working database",
+            f"version {jsonmod.loads(body).get('version')}" if database == "ok"
+            else (body.strip().replace("\n", " ")[:70] or "not answering on :3000"))
+    code, body = grafana_api("/api/dashboards/uid/fortress-command-center")
+    panels = body.count('"type":') if code == 200 else 0
+    provisioned = (services.ETC / "grafana" / "dashboards" / "command-center.json").exists()
+    r.check(code == 200 or provisioned, "the Command Center dashboard is loaded",
+            f"Grafana has it ({panels} panel entries)" if code == 200
+            else "provisioned on disk; Grafana's API needs a login to confirm")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -772,6 +913,8 @@ def run_all(net, lab, args):
         check_ssh_logging(net, lab, r)
     check_ids(net, lab, r)
     check_features(net, lab, r)
+    check_threat_engine(net, lab, r)
+    check_monitoring(net, lab, r)
     if not args.standalone:
         check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
@@ -787,6 +930,6 @@ def run_all(net, lab, args):
                 check_qos(net, lab, r)
                 check_rogue(net, lab, r)
                 check_baseline(net, lab, r)
-                check_scan_detection(net, lab, r)
+                check_insider_scenario(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

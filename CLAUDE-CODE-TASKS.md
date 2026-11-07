@@ -280,12 +280,12 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T15 SSH and central logging (chrony optional: not needed, see D29)
 - [x] T17 Suricata on mirror port
 - [x] T18 Flow collector and baseline
-- [~] T19 Anomaly model (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [ ] T20 ⭐ Explainable threat engine
-- [ ] T21 Automatic response
-- [ ] T22 ⭐ Threat-aware rerouting (optional)
-- [ ] T23 Monitoring stack
-- [ ] T24 Telegram alerts and incident reports
+- [x] T19 Anomaly model
+- [x] T20 ⭐ Explainable threat engine
+- [x] T21 Automatic response
+- [~] T22 ⭐ Threat-aware rerouting (optional) (claimed: dev-the-dev-while-deving, 2026-11-07)
+- [x] T23 Monitoring stack
+- [x] T24 Telegram alerts and incident reports
 - [ ] T25 ⭐ Automated chaos test and results
 - [ ] T26 Demo mode
 - [ ] T27 Documentation and report

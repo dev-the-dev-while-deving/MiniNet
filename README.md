@@ -16,8 +16,8 @@ It survives link and router failures by itself, detects insider attacks with Sur
 | `topology/` | Mininet topology script |
 | `controller/` | SDN controller app and its REST block API |
 | `configs/` | Jinja2 templates for router and service configs (FRR, strongSwan, dnsmasq, rsyslog, chrony, iptables), rendered per node from `fortress.yaml` (no Ansible; see `docs/decisions.md` D15) |
-| `detection/` | Suricata rules, flow collector, baseline traffic, ML model, threat engine |
-| `monitoring/` | Prometheus config, exporter, Grafana dashboards |
+| `detection/` | Suricata rules, the traffic feature collector, baseline traffic, the anomaly model, the threat engine and its Telegram alerts |
+| `monitoring/` | Prometheus config, the metrics exporter, the provisioned Grafana dashboard |
 | `scripts/` | Lab start/stop, setup, checks, failover and chaos tests; `scripts/vm/` manages the VM |
 | `docs/` | Design decisions (`decisions.md`), evidence (screenshots, pcaps), report |
 
@@ -41,7 +41,48 @@ Empty folders hold a `.gitkeep` until the task that fills them.
 
 Type `exit` to stop the lab. If anything goes wrong (a crash, a closed terminal), `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh` removes all leftovers and confirms the VM is clean.
 
-Automated check: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` runs every health check plus a live VRRP failover test and exits (0 = all passed).
+Automated check: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` runs every health check, the failure tests and the full insider scenario, then exits (0 = all passed).
+
+## Watching it work
+
+With the lab running, from your own browser:
+
+| Where | What |
+|-------|------|
+| `http://<VM IP>:3000` | Grafana, with the **Fortress-Net Command Center** dashboard already loaded (login `admin` / `admin`) |
+| `http://<VM IP>:9090` | Prometheus, to try queries like `fortress_threat_score` |
+| `http://<VM IP>:9101/metrics` | the raw metrics the exporter publishes |
+
+`./scripts/vm/create_vm.sh` prints the VM's IP; `multipass info fortress` shows it again.
+
+## Detection and response
+
+The lab watches itself. Three independent sources feed one score per host:
+
+| Source | What it sees | Where it writes |
+|--------|--------------|-----------------|
+| Suricata on ids1 | signatures on traffic mirrored from both cores | `/var/log/fortress/ids1/eve.json` |
+| The feature collector | per-host packets/s, ports touched, refused connections, every 5 s | `/var/log/fortress/collector/` |
+| Central logging | failed SSH logins from every router and server | `/var/log/fortress/srv2/remote/` |
+
+The threat engine combines them into a score out of 100 **with the reasons attached**, and a
+breach (70+) is blocked at the host's own switch port, written up in `docs/incidents/`, and sent
+to Telegram if a bot is configured (copy `.env.example` to `.env`).
+
+```bash
+./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --self-check'   # the scoring, on worked examples
+./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --once'         # score the live lab now
+./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --test-alert'   # see the Telegram message
+```
+
+Training the anomaly model (the lab is started and stopped for you; 30 minutes is the real run):
+
+```bash
+./scripts/vm/vm.sh sudo python3 detection/baseline_traffic.py --minutes 30
+./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/train_model.py'
+```
+
+Without a trained model the engine still works, scoring on its rules alone and saying so.
 
 ## Lab VM
 
