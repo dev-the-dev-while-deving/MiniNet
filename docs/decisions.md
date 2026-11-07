@@ -176,3 +176,13 @@ This replaces the roadmap's `controller/block_api.py`: the block API is `rest_ap
 | r1 power loss (all interfaces down) | 1–2 of ~430 | 51–52 ms |
 
 The r1 result is faster than VRRP's own takeover (r2 Master after about 0.7 s, T06). **Not yet verified** explanation: when r1's trunk port goes down, the controller forgets where the virtual MAC was and floods frames for it to every trunk, including r2's, and r2's kernel forwards them before VRRP has finished electing it. T25 will confirm or correct this with a packet capture on r2's trunk. iperf3 streams are left to T25.
+
+## T10: Link aggregation between the cores
+
+**D24. Controller-based link aggregation, not an OVS LACP bond (a deviation from the task text).**
+- **What we tried first:** an OVS bond (`ovs-vsctl add-bond c1 c1-c2 c1-c2a c1-c2b lacp=active`). LACP negotiated fine (`bond/show`: both members enabled, `lacp_status: negotiated`), yet pings across the cores failed **100% whenever both cables were up**, in every mode (balance-slb, balance-tcp, active-backup, with and without LACP), and worked only with one cable down.
+- **Why:** an OVS bond is a feature of OVS's built-in `NORMAL` forwarding. Under an OpenFlow controller every bond member is still its own OpenFlow port (`c2-c1a` = 10, `c2-c1b` = 11), and the controller's rules bypass the bond logic. Our controller didn't recognise those member ports as switch links, so frames arriving on them were dropped.
+- **What we do instead:** the two cables stay plain ports, and **the controller aggregates them**. Both are members of one edge in its graph (`netgraph.py`). Traffic towards the other core uses an OpenFlow **select group** with one bucket per cable: the switch hashes each flow onto one cable, which is what a LAG / EtherChannel does. Each bucket watches its own port, so a dead cable is skipped by the switch itself. The controller logs `member_down` / `member_up`, and only reroutes (`link_down`) when the last cable goes. Measured: one cable pulled under 10 pings/s, **0 of 83 lost**, no path changed, and the cable rejoins when LLDP sees it again.
+- **Proactive mode (T11)** buckets that lead over the aggregated link watch the select group itself (`watch_group`), so they stay live while any cable is up.
+- **In standalone mode** (`--standalone`) the two cables are just two parallel links and RSTP blocks one.
+- **For the viva:** LACP (802.3ad) is the protocol two switches use to agree to bundle cables. Here the bundling decision is made centrally by the controller, which already knows both cables lead to the same switch (LLDP). The data-plane behaviour is the same: per-flow load sharing and hitless loss of one cable. We don't run the LACP protocol itself.

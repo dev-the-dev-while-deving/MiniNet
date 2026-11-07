@@ -37,6 +37,7 @@ import services
 from labconfig import Lab
 
 OF_PORT = 6653
+CORE_CABLES = ("a", "b")    # two parallel c1-c2 cables, c1-c2a and c1-c2b (T10, decisions D24)
 PARK_VLAN = 4094   # unused VLAN for ids1's ports, so they receive nothing until the mirrors exist (T17)
 
 
@@ -112,10 +113,13 @@ class FortressNet:
         net.addSwitch(lab.fob_switch, dpid=dpid(ids[lab.fob_switch]), failMode="standalone", protocols="OpenFlow13")
 
         c1, c2 = lab.core_switches
-        # Core-to-core trunk (T10 turns this into an LACP bond).
-        self.link(c1, c2, f"{c1}-{c2}", f"{c2}-{c1}")
-        self.switch_port(f"{c1}-{c2}", c1, trunk=True)
-        self.switch_port(f"{c2}-{c1}", c2, trunk=True)
+        # Core-to-core: two parallel cables. Under the controller they are aggregated into one
+        # logical link with an OpenFlow select group (T10, decisions D24); in standalone mode
+        # RSTP simply blocks one of them.
+        for m in CORE_CABLES:
+            self.link(c1, c2, f"{c1}-{c2}{m}", f"{c2}-{c1}{m}")
+            self.switch_port(f"{c1}-{c2}{m}", c1, trunk=True)
+            self.switch_port(f"{c2}-{c1}{m}", c2, trunk=True)
         # Every access switch has an uplink to both cores. These redundant uplinks form loops,
         # which is why standalone mode needs RSTP.
         for s in lab.access_switches:
@@ -297,6 +301,8 @@ def cleanup(lab):
              for b in lab.core_switches + lab.access_switches + list(lab.hosts) + list(lab.routers)
              + [lab.ids["host"], lab.monitor["name"]]}
     names.add(f"{lab.monitor['name']}-eth0")
+    c1, c2 = lab.core_switches
+    names |= {f"{a}-{b}{m}" for a, b in ((c1, c2), (c2, c1)) for m in CORE_CABLES}
     existing = subprocess.run(["ip", "-o", "link", "show"], capture_output=True, text=True).stdout
     removed = []
     for line in existing.splitlines():

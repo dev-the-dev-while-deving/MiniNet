@@ -272,8 +272,8 @@ Every member does T-1 on their own machine; the box records that the scripts exi
 - [x] T08 Ryu controller, base
 - [x] T09 Reactive rerouting
 - [x] T09b Early measurement tool
-- [~] T10 LACP bond (claimed: dev-the-dev-while-deving, 2026-11-07)
-- [ ] T11 ⭐ Proactive fast-failover
+- [x] T10 LACP bond (as controller link aggregation, see decisions D24)
+- [~] T11 ⭐ Proactive fast-failover (claimed: dev-the-dev-while-deving, 2026-11-07)
 - [ ] T12 ⭐ Mission-priority traffic
 - [ ] T13 Zone isolation and rogue control
 - [ ] T14 IPsec VPN

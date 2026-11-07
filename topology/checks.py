@@ -380,6 +380,57 @@ def check_reroute(net, lab, r):
             f"{s.get('reroutes', 0) - before} new entries")
 
 
+# --- T10: link aggregation between the cores ----------------------------------------
+def lag_groups(net, core):
+    """Select groups on a core switch and their bucket counts, from ovs-ofctl dump-groups."""
+    out = net[core].cmd(f"ovs-ofctl -O OpenFlow13 dump-groups {core}")
+    return [line.count("bucket=") for line in out.splitlines() if "type=select" in line]
+
+
+def check_lag(net, lab, r):
+    """The two c1-c2 cables are one aggregated link in the controller, carried by an
+    OpenFlow select group with one bucket per cable on each core."""
+    import services
+    output("== Link aggregation between the cores (2 cables, select groups)\n")
+    c1, c2 = lab.core_switches
+    agg = (services.controller_status() or {}).get("aggregated", {})
+    n = agg.get(f"{c1}-{c2}", agg.get(f"{c2}-{c1}", 0))
+    r.check(n == 2, f"controller sees {c1}-{c2} as one link with 2 cables", str(agg))
+    for c in (c1, c2):
+        groups = lag_groups(net, c)
+        r.check(2 in groups, f"{c} has a select group with 2 buckets (one per cable)", f"buckets per group: {groups}")
+
+
+def check_lag_failover(net, lab, r):
+    """Disruptive (--check only): pull one of the two core cables under a 10 pings/s stream
+    between r1 and r2 (they sit on different cores, so their traffic crosses the cores).
+    The link must stay up in the controller (no reroute), only a member goes."""
+    import services
+    output("== Link aggregation failover (one c1-c2 cable down, then up)\n")
+    c1, c2 = lab.core_switches
+    g1, g2 = lab.gateway_routers()
+    target = lab.zone_ip(g2, "command")
+    cable = f"{c1}-{c2}a"
+    done = ping_stream(net[g1], target, 10, "lag-ping")
+    time.sleep(2)
+    net[c1].cmd(f"ip link set {cable} down")
+    time.sleep(2)
+    s = services.controller_status() or {}
+    last = s.get("last_reroute") or {}
+    links = [tuple(sorted(l)) for l in s.get("links", [])]
+    r.check(tuple(sorted([c1, c2])) in links and last.get("event") == "member_down",
+            f"{c1}-{c2} stays up in the controller, only a member went", f"last event: {last.get('event')}, "
+            f"{len(last.get('changed', []))} paths changed")
+    r.check(ping(net[g1], target), f"{g1} still reaches {g2} across the cores", f"{target}")
+    net[c1].cmd(f"ip link set {cable} up")
+    sent, got = done()
+    time.sleep(4)          # LLDP needs a few seconds to see the cable again
+    agg = (services.controller_status() or {}).get("aggregated", {})
+    r.check(2 in agg.values(), "both cables back in the aggregated link", str(agg))
+    r.check(sent > 0 and sent - got <= 5, "pings lost while a core cable was down",
+            f"{sent - got} of {sent} (10 pings/s)")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -400,11 +451,13 @@ def run_all(net, lab, args):
     check_nat(net, lab, r)
     check_vrrp(net, lab, r)
     if not args.standalone:
+        check_lag(net, lab, r)
         check_controller_flows(net, lab, r)
     if args.check:
         # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
         check_vrrp_failover(net, lab, r)
         if not args.standalone:
+            check_lag_failover(net, lab, r)
             check_reroute(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

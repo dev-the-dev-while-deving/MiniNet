@@ -68,6 +68,13 @@ class FortressController(app_manager.RyuApp):
         self.roles = {}         # dpid -> {port_no: role} (vlan.py), filled from the port names
         self.installed = set()  # (vlan, mac) destinations that have forwarding rules
         self.reroutes = []      # every reroute event (also in reroutes.jsonl)
+        # T11: "reactive" = the controller reroutes after a failure (T09);
+        # "proactive" = every rule also gets a precomputed backup port in an OpenFlow
+        # fast-failover group, so the switch itself fails over in the data plane.
+        self.mode = os.environ.get("FORTRESS_MODE", "reactive")
+        self.groups = {}        # (dpid, vlan, mac) -> group id (proactive mode)
+        self.next_group = {}    # dpid -> next free group id
+        self.lags = {}          # (dpid, neighbour) -> ports in its select group (T10, parallel cables)
         self.mac_names = {h["mac"]: h["name"] for h in self.lab.hosts.values()}
         self.mac_names[self.lab.monitor["mac"]] = self.lab.monitor["name"]
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,27 +164,53 @@ class FortressController(app_manager.RyuApp):
         if msg.reason == ofp.OFPPR_ADD or not down:
             self.port_added(dp, port.port_no, port.name.decode())
         if down:
-            # A switch link went down: reroute right away (T09). This is the fastest signal we
-            # get; Ryu's LLDP discovery also reports it a little later (then nothing is left to do).
-            nbr = self.net.link_on_port(dp.id, port.port_no)
-            if nbr is not None:
-                self.reroute("link_down", dp.id, nbr, lambda: self.net.remove_link(dp.id, nbr))
+            self.cable_gone(dp.id, port.port_no)
             for key in self.net.forget_port(dp.id, port.port_no):
                 self.uninstall(*key)
+
+    def cable_gone(self, dpid, port_no):
+        """A cable between two switches went down (T09/T10). If it was the last cable to that
+        neighbour, the link is gone: reroute. If parallel cables remain (c1-c2), only the
+        aggregation group loses a member and every path stays the same."""
+        nbr = self.net.link_on_port(dpid, port_no)
+        if nbr is None:
+            return
+        event = "link_down" if len(self.net.ports(dpid, nbr)) == 1 else "member_down"
+        self.reroute(event, dpid, nbr, lambda: self.net.remove_cable(dpid, port_no))
 
     # --- links (from LLDP discovery) ---------------------------------------------------
     @set_ev_cls(topo_event.EventLinkAdd)
     def link_add(self, ev):
         s, d = ev.link.src, ev.link.dst
-        if not self.net.g.has_edge(s.dpid, d.dpid):
-            self.reroute("link_up", s.dpid, d.dpid,
-                         lambda: self.net.add_link(s.dpid, s.port_no, d.dpid, d.port_no))
+        if self.net.link_on_port(s.dpid, s.port_no) is not None:
+            return                                   # LLDP re-reporting a known cable
+        event = "member_up" if self.net.g.has_edge(s.dpid, d.dpid) else "link_up"
+        self.reroute(event, s.dpid, d.dpid, lambda: self.net.add_link(s.dpid, s.port_no, d.dpid, d.port_no))
 
     @set_ev_cls(topo_event.EventLinkDelete)
     def link_delete(self, ev):
-        s, d = ev.link.src, ev.link.dst
-        if self.net.g.has_edge(s.dpid, d.dpid):
-            self.reroute("link_down", s.dpid, d.dpid, lambda: self.net.remove_link(s.dpid, d.dpid))
+        self.cable_gone(ev.link.src.dpid, ev.link.src.port_no)
+
+    def link_actions(self, dp, nbr):
+        """Actions that send a frame to neighbour switch nbr. One cable: output to its port.
+        Several parallel cables (c1-c2, T10): an OpenFlow SELECT group with one bucket per
+        cable. The switch hashes each flow onto one bucket (link aggregation, like a LAG) and
+        skips buckets whose watched port is down, so a dead cable is bypassed in the data
+        plane. Once a neighbour has had a group it keeps it, even with one cable left."""
+        p, ofp = dp.ofproto_parser, dp.ofproto
+        ports = self.net.ports(dp.id, nbr)
+        key = (dp.id, nbr)
+        if len(ports) == 1 and key not in self.lags:
+            return [p.OFPActionOutput(ports[0])]
+        gid = 0x10000 + nbr
+        if self.lags.get(key) != tuple(ports):
+            buckets = [p.OFPBucket(weight=1, watch_port=pt, watch_group=ofp.OFPG_ANY, actions=[p.OFPActionOutput(pt)])
+                       for pt in ports]
+            command = ofp.OFPGC_MODIFY if key in self.lags else ofp.OFPGC_ADD
+            dp.send_msg(p.OFPGroupMod(datapath=dp, command=command, type_=ofp.OFPGT_SELECT,
+                                      group_id=gid, buckets=buckets))
+            self.lags[key] = tuple(ports)
+        return [p.OFPActionGroup(gid)]
 
     # --- rerouting (T09) -----------------------------------------------------------------
     def all_paths(self):
@@ -231,15 +264,19 @@ class FortressController(app_manager.RyuApp):
             return pop + [p.OFPActionOutput(dst_port)]
         if dpid not in tree:
             return None
-        return [p.OFPActionOutput(self.net.g[dpid][tree[dpid]]["ports"][dpid])]
+        return self.link_actions(self.dps[dpid], tree[dpid])
 
     def install(self, vlan, mac):
-        """Rules for destination (vlan, mac) on every switch, along one shortest-path tree."""
+        """Rules for destination (vlan, mac) on every switch, along one shortest-path tree.
+        Proactive mode: on every switch except the destination's, the rule points at a
+        fast-failover group instead of a port (ff_actions)."""
         dst_dpid = self.net.hosts[(vlan, mac)][0]
         tree = paths.tree_to(self.net.g, dst_dpid, self.core2)
         for dpid, dp in self.dps.items():
             actions = self.out_actions(dpid, vlan, mac, tree)
             match = dp.ofproto_parser.OFPMatch(vlan_vid=VID_PRESENT | vlan, eth_dst=mac)
+            if actions and self.mode == "proactive" and dpid != dst_dpid:
+                actions = self.ff_actions(dp, vlan, mac, tree[dpid], dst_dpid, actions)
             if actions:
                 self.add_flow(dp, T_FORWARD, PRIO_FORWARD, match, actions)
             else:
@@ -247,9 +284,41 @@ class FortressController(app_manager.RyuApp):
         self.installed.add((vlan, mac))
         return tree
 
+    def ff_actions(self, dp, vlan, mac, primary_nbr, dst_dpid, primary_actions):
+        """T11: put the primary port and a backup port in an OpenFlow fast-failover group.
+        The switch uses the first bucket whose watched port is up, so when the primary
+        link dies it switches to the backup by itself, without asking the controller.
+        The backup next hop is the best path that avoids the primary link (paths.py)."""
+        p, ofp = dp.ofproto_parser, dp.ofproto
+        backup_nbr = paths.backup_next_hop(self.net.g, dp.id, primary_nbr, dst_dpid, self.core2)
+        if backup_nbr is None:
+            return primary_actions                  # no alternative path: plain rule
+        buckets = []
+        for nbr in (primary_nbr, backup_nbr):
+            acts = self.link_actions(dp, nbr)
+            if isinstance(acts[0], p.OFPActionGroup):
+                # Towards an aggregated link: the bucket is live while any of its cables is up.
+                buckets.append(p.OFPBucket(watch_port=ofp.OFPP_ANY, watch_group=acts[0].group_id, actions=acts))
+            else:
+                buckets.append(p.OFPBucket(watch_port=acts[0].port, watch_group=ofp.OFPG_ANY, actions=acts))
+        key = (dp.id, vlan, mac)
+        if key in self.groups:
+            command = ofp.OFPGC_MODIFY
+        else:
+            self.next_group[dp.id] = self.next_group.get(dp.id, 0) + 1
+            self.groups[key] = self.next_group[dp.id]
+            command = ofp.OFPGC_ADD
+        dp.send_msg(p.OFPGroupMod(datapath=dp, command=command, type_=ofp.OFPGT_FF,
+                                  group_id=self.groups[key], buckets=buckets))
+        return [p.OFPActionGroup(self.groups[key])]
+
     def uninstall(self, vlan, mac):
         for dp in self.dps.values():
             self.delete_flows(dp, T_FORWARD, dp.ofproto_parser.OFPMatch(vlan_vid=VID_PRESENT | vlan, eth_dst=mac))
+            gid = self.groups.pop((dp.id, vlan, mac), None)
+            if gid is not None:
+                p, ofp = dp.ofproto_parser, dp.ofproto
+                dp.send_msg(p.OFPGroupMod(datapath=dp, command=ofp.OFPGC_DELETE, type_=ofp.OFPGT_FF, group_id=gid))
         self.installed.discard((vlan, mac))
 
     def reinstall_all(self):
@@ -339,10 +408,14 @@ class FortressController(app_manager.RyuApp):
         return {
             "switches": sorted(self.swname(d) for d in self.dps),
             "links": sorted(sorted([self.swname(a), self.swname(b)]) for a, b in self.net.links()),
+            "aggregated": {f"{self.swname(a)}-{self.swname(b)}": len(self.net.g[a][b]["members"])
+                           for a, b in self.net.links() if len(self.net.g[a][b]["members"]) > 1},
             "hosts": sorted(({"vlan": v, "mac": m, "name": self.mac_names.get(m, m),
                               "switch": self.swname(d), "port": self.roles.get(d, {}).get(pt, {}).get("name", pt)}
                              for (v, m), (d, pt) in self.net.hosts.items()), key=lambda h: (h["vlan"], h["name"])),
+            "mode": self.mode,
             "installed": len(self.installed),
+            "ff_groups": len(self.groups),
             "reroutes": len(self.reroutes),
             "last_reroute": self.reroutes[-1] if self.reroutes else None,
             "time": time.time(),

@@ -33,8 +33,9 @@ class PortMap:
             return {"kind": "access", "vlan": a["vlan"], "mac": a["mac"], "peer": peer}
         if peer in self.trunk_routers:
             return {"kind": "trunk", "vlan": None, "mac": None, "peer": peer}
-        if peer in self.switches:
-            return {"kind": "link", "vlan": None, "mac": None, "peer": peer}
+        if peer in self.switches or (peer[:-1] in self.switches and peer[-1:].isalpha()):
+            # s1-c1, or one of the parallel core cables c1-c2a / c1-c2b (T10, decisions D24)
+            return {"kind": "link", "vlan": None, "mac": None, "peer": peer.rstrip("ab") if peer not in self.switches else peer}
         if peer == self.ids:
             return {"kind": "ids", "vlan": None, "mac": None, "peer": peer}
         return {"kind": "unknown", "vlan": None, "mac": None, "peer": peer}

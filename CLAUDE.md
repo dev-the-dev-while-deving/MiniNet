@@ -60,7 +60,7 @@ Optional: chrony (lab NTP server), threat-aware rerouting (T22). Ansible is drop
 - After each task: tick its box in `CLAUDE-CODE-TASKS.md`, tell the user how to check it, suggest a commit message (`T03: ...`), and wait.
 
 ## Topology
-- **Core:** c1, c2 (OVS), joined by an LACP bond (T10).
+- **Core:** c1, c2 (OVS), joined by two cables the controller aggregates with a select group (T10, D24; OVS bonds only work in NORMAL mode).
 - **Access:** s1–s5, one per zone plus one for the servers, each uplinked to both cores, which makes loops (RSTP or the controller's spanning tree handles them).
 - **Routers** (Mininet hosts with IP forwarding): r1, r2 are zone gateways (VRRP, OSPF, NAT, VPN), r3 is the FOB and r4 is the simulated ISP/internet.
 - **Servers:** srv1 DHCP/DNS (domain `fortress.mil`), srv2 syslog (+ optional NTP), srv3 web/file target; ids1 runs Suricata on mirror ports of both cores (no IP).
@@ -95,7 +95,7 @@ Follow these in every network task. If one turns out wrong, change `docs/decisio
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`). Tags: `v0.1-base`, `v0.2-routing`.
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc), T05 (FRR OSPF per router, floating static, NAT), T06 (VRRP via vrrpd + macvlan; `fail`/`recover` CLI), T07 (`start_all.sh` / `stop_all.sh`), T08 (Ryu controller: 4-table pipeline, controller flooding; D21), T09 (reroute on port-down, `reroutes.jsonl`), T09b (`scripts/measure.py`, `docs/results/early.csv`), T10 (c1-c2 aggregation via select groups, not an OVS bond; D24). Tags: `v0.1-base`, `v0.2-routing`.
 - In progress: Part B + C (T08–T15, dev-the-dev-while-deving), one at a time.
 - Next free: T08 (Ryu controller, base).
 
