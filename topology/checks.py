@@ -330,6 +330,56 @@ def check_controller_flows(net, lab, r):
             f"{s.get('installed', 0)} destinations, {len(s.get('hosts', []))} hosts learned")
 
 
+# --- T09: reactive rerouting -----------------------------------------------------
+def ping_stream(host, dst_ip, seconds, name):
+    """Start a 10 pings/s stream in the background. Returns a function that waits for it and
+    returns (sent, received)."""
+    log = f"/var/run/fortress/{host.name}/{name}.txt"
+    pid = host.cmd(f"ping -n -i 0.1 -w {seconds} {dst_ip} > {log} 2>&1 & echo $!").strip().splitlines()[-1]
+
+    def result():
+        host.cmd(f"wait {pid}")
+        m = re.search(r"(\d+) packets transmitted, (\d+) received", host.cmd(f"cat {log}"))
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    return result
+
+
+def check_reroute(net, lab, r):
+    """Disruptive (--check only, controller mode): cut the c1-s1 link under a 10 pings/s stream
+    from Command to the servers, check the controller rerouted it and logged it, then restore
+    the link and check traffic goes back to the shortest path."""
+    import services
+    output("== Reactive rerouting (link c1-s1 down, then up)\n")
+    c1, s1 = lab.core_switches[0], lab.zones["command"]["switch"]
+    src = net[next(iter(lab.zones["command"]["hosts"]))]
+    dst = next(h for h in lab.hosts.values() if h["role"] == "web-file")
+    before = (services.controller_status() or {}).get("reroutes", 0)
+    done = ping_stream(src, dst["ip"], 14, "reroute-ping")
+    time.sleep(3)
+    net.configLinkStatus(c1, s1, "down")
+    time.sleep(4)
+    s = services.controller_status() or {}
+    last = s.get("last_reroute") or {}
+    r.check(last.get("event") == "link_down" and sorted(last.get("link", [])) == sorted([c1, s1]),
+            f"controller logged the reroute for {c1}-{s1}",
+            f"{len(last.get('changed', []))} paths changed, {last.get('controller_ms', '?')} ms in the controller")
+    moved = [c for c in last.get("changed", []) if c["switch"] == s1]
+    r.check(bool(moved) and all(c1 not in c["new"][:2] for c in moved), f"{s1}'s paths now avoid the {c1}-{s1} link",
+            f"e.g. {moved[0]['dst']}: {'-'.join(moved[0]['old'])} -> {'-'.join(moved[0]['new'])}" if moved else "")
+    r.check(ping(src, dst["ip"]), f"{src.name} still reaches {dst['name']}", "while the link is down")
+    net.configLinkStatus(c1, s1, "up")
+    time.sleep(5)       # LLDP needs a few seconds to see the link again
+    s = services.controller_status() or {}
+    last = s.get("last_reroute") or {}
+    r.check(last.get("event") == "link_up", "traffic moved back to the shortest path when the link returned",
+            f"{len(last.get('changed', []))} paths changed back")
+    sent, got = done()
+    r.check(sent > 0 and sent - got <= 10, f"pings lost during the {c1}-{s1} failure",
+            f"{sent - got} of {sent} (10 pings/s, so about {(sent - got) * 0.1:.1f} s)")
+    r.check(s.get("reroutes", 0) >= before + 2, "reroute log in /var/log/fortress/ryu/reroutes.jsonl",
+            f"{s.get('reroutes', 0) - before} new entries")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -354,5 +404,7 @@ def run_all(net, lab, args):
     if args.check:
         # Disruptive tests only run in --check mode, never when start_all.sh brings up the lab.
         check_vrrp_failover(net, lab, r)
+        if not args.standalone:
+            check_reroute(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

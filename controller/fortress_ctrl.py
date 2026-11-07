@@ -67,6 +67,7 @@ class FortressController(app_manager.RyuApp):
         self.dps = {}           # dpid -> Ryu datapath (connected switches)
         self.roles = {}         # dpid -> {port_no: role} (vlan.py), filled from the port names
         self.installed = set()  # (vlan, mac) destinations that have forwarding rules
+        self.reroutes = []      # every reroute event (also in reroutes.jsonl)
         self.mac_names = {h["mac"]: h["name"] for h in self.lab.hosts.values()}
         self.mac_names[self.lab.monitor["mac"]] = self.lab.monitor["name"]
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -156,6 +157,11 @@ class FortressController(app_manager.RyuApp):
         if msg.reason == ofp.OFPPR_ADD or not down:
             self.port_added(dp, port.port_no, port.name.decode())
         if down:
+            # A switch link went down: reroute right away (T09). This is the fastest signal we
+            # get; Ryu's LLDP discovery also reports it a little later (then nothing is left to do).
+            nbr = self.net.link_on_port(dp.id, port.port_no)
+            if nbr is not None:
+                self.reroute("link_down", dp.id, nbr, lambda: self.net.remove_link(dp.id, nbr))
             for key in self.net.forget_port(dp.id, port.port_no):
                 self.uninstall(*key)
 
@@ -163,16 +169,53 @@ class FortressController(app_manager.RyuApp):
     @set_ev_cls(topo_event.EventLinkAdd)
     def link_add(self, ev):
         s, d = ev.link.src, ev.link.dst
-        if self.net.add_link(s.dpid, s.port_no, d.dpid, d.port_no):
-            self.logger.info("link up %s-%s", self.swname(s.dpid), self.swname(d.dpid))
-            self.reinstall_all()
+        if not self.net.g.has_edge(s.dpid, d.dpid):
+            self.reroute("link_up", s.dpid, d.dpid,
+                         lambda: self.net.add_link(s.dpid, s.port_no, d.dpid, d.port_no))
 
     @set_ev_cls(topo_event.EventLinkDelete)
     def link_delete(self, ev):
         s, d = ev.link.src, ev.link.dst
-        if self.net.remove_link(s.dpid, d.dpid):
-            self.logger.info("link down %s-%s", self.swname(s.dpid), self.swname(d.dpid))
-            self.reinstall_all()
+        if self.net.g.has_edge(s.dpid, d.dpid):
+            self.reroute("link_down", s.dpid, d.dpid, lambda: self.net.remove_link(s.dpid, d.dpid))
+
+    # --- rerouting (T09) -----------------------------------------------------------------
+    def all_paths(self):
+        """{(vlan, mac): {switch: [switch path to the destination]}} for installed destinations."""
+        out = {}
+        for key in self.installed:
+            loc = self.net.hosts.get(key)
+            if not loc:
+                continue
+            out[key] = {self.swname(sw): [self.swname(x) for x in paths.path_to(self.net.g, sw, loc[0], self.core2)]
+                        for sw in self.dps}
+        return out
+
+    def reroute(self, event, a, b, change):
+        """Apply a topology change, recompute every destination's tree, and log what moved.
+        One JSON line per event in /var/log/fortress/ryu/reroutes.jsonl:
+          {time, event, link, changed: [{dst, vlan, switch, old, new}, ...]}"""
+        t0 = time.time()
+        before = self.all_paths()
+        change()
+        self.reinstall_all()
+        after = self.all_paths()
+        changed = []
+        for key, per_switch in after.items():
+            for sw, new in per_switch.items():
+                old = before.get(key, {}).get(sw)
+                if old is not None and old != new:
+                    changed.append({"dst": self.mac_names.get(key[1], key[1]), "vlan": key[0],
+                                    "switch": sw, "old": old, "new": new})
+        if event == "link_up" and not changed:
+            return      # links found by LLDP at start-up, before any traffic: nothing to log
+        entry = {"time": t0, "event": event, "link": [self.swname(a), self.swname(b)],
+                 "controller_ms": round((time.time() - t0) * 1000, 1), "changed": changed}
+        self.reroutes.append(entry)
+        with open(LOG_DIR / "reroutes.jsonl", "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        self.logger.info("%s %s-%s: %d paths changed in %.1f ms", event, entry["link"][0], entry["link"][1],
+                         len(changed), entry["controller_ms"])
 
     # --- forwarding ------------------------------------------------------------------------
     def out_actions(self, dpid, vlan, mac, tree):
@@ -300,5 +343,7 @@ class FortressController(app_manager.RyuApp):
                               "switch": self.swname(d), "port": self.roles.get(d, {}).get(pt, {}).get("name", pt)}
                              for (v, m), (d, pt) in self.net.hosts.items()), key=lambda h: (h["vlan"], h["name"])),
             "installed": len(self.installed),
+            "reroutes": len(self.reroutes),
+            "last_reroute": self.reroutes[-1] if self.reroutes else None,
             "time": time.time(),
         }
