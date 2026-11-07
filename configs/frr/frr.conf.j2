@@ -1,0 +1,42 @@
+! frr.conf for {{ router }} ({{ role }}).
+! GENERATED from config/fortress.yaml by topology/render_configs.py (template configs/frr/frr.conf.j2).
+! Look at the running version with:  vtysh -N {{ router }} -c "show running-config"
+frr defaults traditional
+hostname {{ router }}
+log file {{ log_dir }}/frr.log informational
+service integrated-vtysh-config
+!
+{% for i in links %}
+! Point-to-point link to {{ i.peer }} ({{ i.ip }}/30). Cost {{ i.cost }}: lower wins, so this decides the primary path.
+! Hello every 1 s and dead after 4 s, so a dead neighbour is noticed in seconds (default: 40 s).
+interface {{ i.name }}
+ ip ospf area 0
+ ip ospf network point-to-point
+ ip ospf cost {{ i.cost }}
+ ip ospf hello-interval 1
+ ip ospf dead-interval 4
+exit
+!
+{% endfor %}
+{% for l in lans %}
+! {{ l.title }}: advertised into OSPF, but passive (no OSPF packets towards hosts).
+interface {{ l.name }}
+ ip ospf area 0
+ ip ospf passive
+exit
+!
+{% endfor %}
+router ospf
+ ospf router-id {{ router_id }}
+{% if originate_default %}
+ ! The ISP router tells everyone "send unknown destinations (the internet) to me".
+ default-information originate always
+{% endif %}
+exit
+!
+{% for s in static_routes %}
+! Floating static route: distance {{ s.distance }} is worse than OSPF's 110, so it is only used
+! when OSPF has no route to {{ s.to }} at all.
+ip route {{ s.to }} {{ s.via }} {{ s.distance }}
+{% endfor %}
+!

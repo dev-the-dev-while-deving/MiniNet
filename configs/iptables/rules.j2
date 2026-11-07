@@ -1,0 +1,13 @@
+# iptables rules for {{ router }}, loaded with iptables-restore inside {{ router }}'s namespace.
+# GENERATED from config/fortress.yaml by topology/render_configs.py (template configs/iptables/rules.j2).
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+{% for intf in nat_out %}
+# NAT: traffic leaving towards the ISP gets {{ router }}'s address on {{ intf }} as its source,
+# so the internet never sees the base's internal addresses.
+-A POSTROUTING -o {{ intf }} -j MASQUERADE
+{% endfor %}
+COMMIT

@@ -1,0 +1,14 @@
+# FRR daemons file for {{ router }}.
+# GENERATED from config/fortress.yaml by topology/render_configs.py (template configs/frr/daemons.j2).
+# Started with "/usr/lib/frr/frrinit.sh start {{ router }}" inside {{ router }}'s network namespace;
+# the instance name makes FRR use /etc/frr/{{ router }}/ and /var/run/frr/{{ router }}/ (decisions D12).
+# zebra, mgmtd and staticd always run; these lines switch the routing protocols on or off.
+ospfd=yes
+vrrpd={{ "yes" if vrrp else "no" }}
+vtysh_enable=yes
+# -A 127.0.0.1: the management (vty) port listens on the router's own loopback only.
+zebra_options="  -A 127.0.0.1 -s 90000000"
+mgmtd_options="  -A 127.0.0.1"
+ospfd_options="  -A 127.0.0.1"
+staticd_options="-A 127.0.0.1"
+vrrpd_options="  -A 127.0.0.1"

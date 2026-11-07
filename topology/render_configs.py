@@ -24,6 +24,7 @@ from labconfig import ROOT, Lab
 
 TEMPLATES = ROOT / "configs"
 ETC = Path("/etc/fortress")
+FRR_ETC = Path("/etc/frr")       # FRR's instance tooling needs /etc/frr/<router>/
 RUN = Path("/var/run/fortress")
 LOG = Path("/var/log/fortress")
 
@@ -64,10 +65,46 @@ def dnsmasq(lab, out):
     return [write(out / srv["name"] / "dnsmasq.conf", text)]
 
 
-def render_all(lab, out=ETC):
+def frr(lab, frr_out):
+    """daemons + frr.conf for every router (OSPF area 0, costs, floating static route)."""
+    files = []
+    for r, info in lab.routers.items():
+        lans = []
+        if info["role"] == "gateway":
+            lans = [{"name": f"{r}-lan.{z['vlan']}", "title": f"{z['title']} (VLAN {z['vlan']})"}
+                    for z in lab.zones.values()]
+        elif info["role"] == "fob":
+            lans = [{"name": f"{r}-lan", "title": "FOB LAN"}]
+        elif info["role"] == "isp":
+            lans = [{"name": f"{r}-inet", "title": "Internet hosts"}]
+        conf = env.get_template("frr/frr.conf.j2").render(
+            router=r, role=info["role"], router_id=info["router_id"], log_dir=LOG / r,
+            links=lab.router_ifaces[r], lans=lans,
+            originate_default=info["role"] == "isp",
+            static_routes=lab.backup_static_routes.get(r, []))
+        daemons = env.get_template("frr/daemons.j2").render(router=r, vrrp=info["role"] == "gateway")
+        files.append(write(frr_out / r / "frr.conf", conf))
+        files.append(write(frr_out / r / "daemons", daemons))
+        # vtysh refuses to apply frr.conf at boot ("processing failure") if this file is missing.
+        files.append(write(frr_out / r / "vtysh.conf", "! vtysh.conf (intentionally empty; see frr.conf)\n"))
+    return files
+
+
+def iptables(lab, out):
+    """NAT on the gateway routers towards the ISP router."""
+    isp = lab.router_with_role("isp")
+    files = []
+    for r in lab.gateway_routers():
+        nat_out = [i["name"] for i in lab.router_ifaces[r] if i["peer"] == isp]
+        text = env.get_template("iptables/rules.j2").render(router=r, nat_out=nat_out)
+        files.append(write(out / r / "iptables.rules", text))
+    return files
+
+
+def render_all(lab, out=ETC, frr_out=FRR_ETC):
     """Render every config. Returns the list of files written."""
-    out = Path(out)
-    return dnsmasq(lab, out)
+    out, frr_out = Path(out), Path(frr_out)
+    return dnsmasq(lab, out) + frr(lab, frr_out) + iptables(lab, out)
 
 
 if __name__ == "__main__":
@@ -75,5 +112,8 @@ if __name__ == "__main__":
     p.add_argument("--out", default=str(ETC), help=f"output folder (default {ETC})")
     p.add_argument("--small", action="store_true")
     a = p.parse_args()
-    for f in render_all(Lab(small=a.small), a.out):
+    out = Path(a.out)
+    # With --out, FRR files go to <out>/frr/<router>/ too, so nothing touches /etc.
+    frr_out = FRR_ETC if out == ETC else out / "frr"
+    for f in render_all(Lab(small=a.small), out, frr_out):
         print(f"wrote {f}")

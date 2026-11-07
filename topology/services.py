@@ -87,6 +87,58 @@ def start_dhcp_clients(net, lab, timeout=30):
     return sorted(missing)
 
 
+# --- Routing (T05) -----------------------------------------------------------------
+FRRINIT = "/usr/lib/frr/frrinit.sh"
+
+
+def vtysh(net, router, command):
+    """Run a vtysh command against one router's FRR instance (-N picks the instance)."""
+    return net[router].cmd(f"vtysh -N {router} -c '{command}'")
+
+
+def start_routing(net, lab):
+    """FRR in every router namespace, plus the routers' iptables rules (NAT on r1/r2).
+    `frrinit.sh start r1` starts FRR's watchdog and daemons with the r1 instance's config
+    in /etc/frr/r1/; run through net['r1'].cmd() they live in r1's namespace."""
+    for r in lab.routers:
+        node_dirs(r, owner="frr")
+        out = net[r].cmd(f"{FRRINIT} start {r}")
+        if "fail" in out.lower():
+            info(f"*** FRR on {r}: {out.strip()}\n")
+    for r in lab.gateway_routers():
+        net[r].cmd(f"iptables-restore < {ETC / r / 'iptables.rules'}")
+
+
+def vtysh_json(net, router, command):
+    """Run a vtysh "... json" command and parse the result ({} if FRR isn't answering).
+    Any warning text vtysh prints before the JSON is skipped."""
+    import json
+    out = vtysh(net, router, command)
+    try:
+        return json.loads(out[out.index("{"):])
+    except ValueError:
+        return {}
+
+
+def ospf_neighbors(net, router):
+    """{neighbour router-id: state} from `show ip ospf neighbor json`, e.g. {"3.3.3.3": "Full/-"}."""
+    data = vtysh_json(net, router, "show ip ospf neighbor json")
+    return {rid: n[0].get("nbrState", "") for rid, n in data.get("neighbors", {}).items()}
+
+
+def wait_for_ospf(net, lab, timeout=40):
+    """Wait until every router is Full with every neighbour it has a link to.
+    Returns the seconds it took (or the timeout)."""
+    start = time.time()
+    want = {r: len(ifaces) for r, ifaces in lab.router_ifaces.items()}
+    while time.time() - start < timeout:
+        if all(sum(s.startswith("Full") for s in ospf_neighbors(net, r).values()) == n
+               for r, n in want.items()):
+            return time.time() - start
+        time.sleep(1)
+    return timeout
+
+
 # --- Start and stop ---------------------------------------------------------------
 def start(net, lab):
     """Bring every service up, in order. Each step depends on the ones before it."""
@@ -102,11 +154,18 @@ def start(net, lab):
     missing = start_dhcp_clients(net, lab)
     if missing:
         info(f"*** No DHCP lease for: {', '.join(missing)}\n")
+    info("*** Routing: FRR (OSPF) on every router, NAT on r1/r2\n")
+    start_routing(net, lab)
+    info(f"*** OSPF converged in {wait_for_ospf(net, lab):.1f} s\n")
 
 
 def stop(net=None, lab=None):
     """Stop every daemon we started, using the PID files under /var/run/fortress.
     Safe to call when nothing is running (stop_all.sh calls it after a crash)."""
+    import subprocess
+    # FRR instances: one watchfrr per router; frrinit.sh stops it and all its daemons.
+    for watchfrr in sorted(Path("/var/run/frr").glob("*/watchfrr.pid")):
+        subprocess.run([FRRINIT, "stop", watchfrr.parent.name], capture_output=True)
     for pidfile in sorted(RUN.glob("*/*.pid")):
         try:
             pid = int(pidfile.read_text().split()[0])

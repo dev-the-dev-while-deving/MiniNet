@@ -151,6 +151,76 @@ def check_dns(net, lab, r):
         r.check(answer == srv["ip"], f"{h['name']} resolves {name}", f"-> {answer or 'nothing'} via {m.group(1)}")
 
 
+# --- T05: routing ---------------------------------------------------------------
+def check_ospf(net, lab, r):
+    """Every router has a Full OSPF adjacency with each router it shares a link with."""
+    import services
+    output("== OSPF adjacencies (area 0)\n")
+    rid = {name: info["router_id"] for name, info in lab.routers.items()}
+    for router, ifaces in lab.router_ifaces.items():
+        states = services.ospf_neighbors(net, router)
+        for i in ifaces:
+            state = states.get(rid[i["peer"]], "missing")
+            r.check(state.startswith("Full"), f"{router} <-> {i['peer']}", f"{state} on {i['name']}")
+
+
+def check_reachability(net, lab, r):
+    """Command Center reaches the FOB (r3 and its LAN) and the ISP/internet (r4 and www1)."""
+    output("== Routing between zones, the FOB and the internet\n")
+    src = net[next(h for h in lab.zones["command"]["hosts"])]
+    r3, r4 = lab.router_with_role("fob"), lab.router_with_role("isp")
+    targets = [(f"{r3} (FOB gateway)", lab.fob["gateway"]), (f"{r4} (ISP)", lab.internet["gateway"])]
+    targets += [(h["name"], h["ip"]) for h in lab.hosts.values() if h["zone"] in ("fob", "internet")]
+    for name, ip in targets:
+        r.check(ping(src, ip), f"{src.name} -> {name}", ip)
+    srv = lab.host_with_role("dhcp-dns")
+    fob1 = next(h for h in lab.hosts.values() if h["zone"] == "fob")
+    r.check(ping(net[srv["name"]], fob1["ip"]), f"{srv['name']} -> {fob1['name']}", "(Servers zone to the FOB)")
+
+
+def check_primary_path(net, lab, r):
+    """traceroute from Command to the FOB goes r1 -> r3 (the cost-10 primary WAN), not via r2."""
+    output("== Primary WAN path (OSPF costs)\n")
+    src = net[next(h for h in lab.zones["command"]["hosts"])]
+    fob1 = next(h for h in lab.hosts.values() if h["zone"] == "fob")
+    primary = next(l for l in lab.links if "primary" in l["purpose"])
+    r3_ip = primary["b_ip"] if primary["b"] == lab.router_with_role("fob") else primary["a_ip"]
+    out = src.cmd(f"traceroute -n -q 1 -w 1 -m 4 {fob1['ip']}")
+    hops = re.findall(r"^\s*\d+\s+(\S+)", out, re.M)
+    r.check(len(hops) >= 2 and hops[1] == r3_ip, f"{src.name} -> {fob1['name']} via r1 then r3",
+            f"hops: {' '.join(hops) or 'none'} (r3 on the primary link is {r3_ip})")
+
+
+def check_backup_route(net, lab, r):
+    """r2's floating static route to the FOB is installed but not used while OSPF has a route."""
+    import services
+    output("== Floating static route (backup to the FOB)\n")
+    for router, routes in lab.backup_static_routes.items():
+        for s in routes:
+            entries = services.vtysh_json(net, router, f"show ip route {s['to']} json").get(s["to"], [])
+            static = [e for e in entries if e.get("protocol") == "static"]
+            chosen = [e["protocol"] for e in entries if e.get("selected")]
+            r.check(static and static[0].get("distance") == s["distance"] and chosen == ["ospf"],
+                    f"{router}: static {s['to']} via {s['via']} (distance {s['distance']}) is standby",
+                    f"selected now: {', '.join(chosen) or 'none'}")
+
+
+def check_nat(net, lab, r):
+    """Barracks reaches the internet, and the gateway's NAT rule translated that traffic."""
+    output("== NAT towards the internet\n")
+    src = net[next(h for h in lab.zones["barracks"]["hosts"])] if "barracks" in lab.zones else None
+    www = next(h for h in lab.hosts.values() if h["zone"] == "internet")
+    if src is None:
+        r.ok("NAT", "(no Barracks zone in this lab size)")
+        return
+    r.check(ping(src, www["ip"], count=3), f"{src.name} -> {www['name']}", www["ip"])
+    total = 0
+    for g in lab.gateway_routers():
+        out = net[g].cmd("iptables -t nat -L POSTROUTING -n -v -x")
+        total += sum(int(n) for n in re.findall(r"^\s*(\d+)\s+\d+\s+MASQUERADE", out, re.M))
+    r.check(total > 0, "MASQUERADE rule translated packets", f"{total} packets on r1/r2")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -162,5 +232,10 @@ def run_all(net, lab, args):
     check_no_storm(net, lab, r)
     check_dhcp(net, lab, r)
     check_dns(net, lab, r)
+    check_ospf(net, lab, r)
+    check_reachability(net, lab, r)
+    check_primary_path(net, lab, r)
+    check_backup_route(net, lab, r)
+    check_nat(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

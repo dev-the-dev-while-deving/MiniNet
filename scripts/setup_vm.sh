@@ -73,7 +73,7 @@ apt_get install -y -q \
   dnsmasq-base isc-dhcp-relay busybox-static \
   rsyslog \
   strongswan-swanctl charon-systemd \
-  nmap iperf3 tcpdump tshark iputils-arping \
+  nmap iperf3 tcpdump tshark iputils-arping traceroute \
   chrony \
   prometheus grafana \
   python3-venv python3-pip python3-yaml python3-jinja2 \
