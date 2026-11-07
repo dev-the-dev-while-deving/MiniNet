@@ -1,0 +1,167 @@
+# fortress.yaml: the single source of truth for the Fortress-Net lab.
+#
+# Every script (topology, controller, config templates, tests) reads addresses and names
+# from this file. To change the network, change it here, never in the scripts.
+# scripts/check_config.py checks this file for mistakes (overlapping IPs, wrong subnets, ...).
+
+domain: fortress.mil
+
+# --- Switches --------------------------------------------------------------
+# Cores c1/c2 are joined by an LACP bond (T10). Every access switch has one uplink to each core.
+switches:
+  core: [c1, c2]
+  access: [s1, s2, s3, s4, s5]   # zones say which access switch they use
+  fob: s6                        # small LAN behind r3 at the forward operating base
+
+# --- Gateway redundancy (VRRP) ---------------------------------------------
+# In every base zone: .1 is the virtual gateway (VIP), r1 owns .2, r2 owns .3.
+# The VRRP router ID (VRID) is the zone's VLAN number.
+gateways:
+  vip_host: 1
+  r1: {host: 2, vrrp_priority: 120}
+  r2: {host: 3, vrrp_priority: 100}
+  preempt: true
+
+# --- Zones -----------------------------------------------------------------
+# vlan        802.1Q tag on the access ports (and the VRRP VRID)
+# subnet      the zone's /24
+# switch      access switch the zone's hosts plug into
+# reach       zones this zone may start connections to (T13 isolation rules);
+#             "internet" = through r4, "fob" = over the VPN
+# small       kept when the lab runs with --small (4 GB laptops)
+# dhcp_range  dynamic pool handed out by dnsmasq on srv1 (T04)
+# hosts       fixed hosts; their IPs become DHCP reservations so tests can find them
+zones:
+  command:
+    name: Command Center
+    vlan: 10
+    subnet: 192.168.10.0/24
+    switch: s1
+    reach: [intelligence, communications, barracks, servers, management, fob, internet]
+    small: true
+    dhcp_range: [100, 199]
+    hosts:
+      cmd1: {ip: 192.168.10.10}
+      cmd2: {ip: 192.168.10.11}
+
+  intelligence:
+    name: Intelligence
+    vlan: 20
+    subnet: 192.168.20.0/24
+    switch: s2
+    reach: [command]
+    small: true
+    dhcp_range: [100, 199]
+    hosts:
+      intel1: {ip: 192.168.20.10}
+      intel2: {ip: 192.168.20.11}
+
+  communications:
+    name: Communications
+    vlan: 30
+    subnet: 192.168.30.0/24
+    switch: s3
+    reach: [command, servers, fob]
+    small: false
+    dhcp_range: [100, 199]
+    hosts:
+      comms1: {ip: 192.168.30.10}
+      comms2: {ip: 192.168.30.11}
+
+  barracks:
+    name: Barracks
+    vlan: 40
+    subnet: 192.168.40.0/24
+    switch: s4
+    reach: [servers, internet]
+    small: true
+    dhcp_range: [100, 199]
+    hosts:
+      bar1: {ip: 192.168.40.10}
+      bar2: {ip: 192.168.40.11}
+      bar3: {ip: 192.168.40.66, role: attacker}   # runs nmap/hydra in scenario 3
+
+  servers:
+    name: Servers
+    vlan: 60
+    subnet: 10.10.60.0/24
+    switch: s5
+    reach: [command, intelligence, communications, barracks, management, fob, internet]
+    small: true
+    dhcp_range: null              # servers use static addresses only
+    hosts:
+      srv1: {ip: 10.10.60.10, role: dhcp-dns}
+      srv2: {ip: 10.10.60.11, role: syslog}      # + optional NTP (chrony)
+      srv3: {ip: 10.10.60.12, role: web-file}    # target for normal traffic
+
+  management:
+    name: Management
+    vlan: 99
+    subnet: 192.168.99.0/24
+    # There are only five access switches (four user zones + servers), so the admin
+    # workstation plugs into s1 on an access port tagged VLAN 99.
+    switch: s1
+    reach: []                     # admin SSH only; the SSH rules are added in T15
+    small: true
+    dhcp_range: [100, 199]
+    hosts:
+      admin1: {ip: 192.168.99.10, role: admin}
+
+# --- Forward operating base (FOB) ------------------------------------------
+# Not a VLAN on the base switches: it is r3's own LAN, reached over the WAN and the IPsec VPN.
+fob:
+  name: FOB
+  vlan: 70
+  subnet: 172.16.70.0/24
+  gateway: 172.16.70.1            # r3, no VRRP here
+  switch: s6
+  dhcp_range: null
+  hosts:
+    fob1: {ip: 172.16.70.10}
+    fob2: {ip: 172.16.70.11}
+
+# --- Simulated internet behind the ISP router r4 ----------------------------
+# 203.0.113.0/24 is TEST-NET-3, a range reserved for documentation, so it never clashes with real addresses.
+internet:
+  subnet: 203.0.113.0/24
+  gateway: 203.0.113.1            # r4
+  hosts:
+    www1: {ip: 203.0.113.10}
+
+# --- Routers ---------------------------------------------------------------
+# role: gateway = VRRP + OSPF + NAT for the base zones; fob = FOB gateway; isp = fake internet.
+# trunk_to: the core switch the router's 802.1Q trunk plugs into (gateways only).
+routers:
+  r1: {role: gateway, trunk_to: c1, router_id: 1.1.1.1}
+  r2: {role: gateway, trunk_to: c2, router_id: 2.2.2.2}
+  r3: {role: fob, router_id: 3.3.3.3}
+  r4: {role: isp, router_id: 4.4.4.4}
+
+# --- Router-to-router links (/30s carved from 10.0.0.0/24) ----------------
+# The first router in "ends" gets the first usable address (.1 of the /30), the second gets .2.
+# ospf_cost: lower is preferred, so r1-r3 is the primary WAN and r2-r3 the backup.
+router_links:
+  - {ends: [r1, r2], subnet: 10.0.0.0/30,  ospf_cost: 10}
+  - {ends: [r1, r3], subnet: 10.0.0.4/30,  ospf_cost: 10,  purpose: primary WAN}
+  - {ends: [r2, r3], subnet: 10.0.0.8/30,  ospf_cost: 100, purpose: backup WAN}
+  - {ends: [r1, r4], subnet: 10.0.0.12/30, ospf_cost: 10}
+  - {ends: [r2, r4], subnet: 10.0.0.16/30, ospf_cost: 10}
+
+# Floating static route to the FOB on r2: only used if OSPF loses every path.
+# Distance 250 is higher than OSPF's 110, so OSPF routes win while they exist.
+backup_static_routes:
+  r2: [{to: 172.16.70.0/24, via: 10.0.0.10, distance: 250}]   # 10.0.0.10 = r3 on the r2-r3 link
+
+# --- IPsec VPN to the FOB (T14) --------------------------------------------
+vpn:
+  ends: [r1, r3]
+  # The roadmap says 192.168.0.0/16, but the Servers zone (10.10.60.0/24) may reach the FOB too,
+  # so it has to be inside the tunnel as well.
+  local_subnets: [192.168.0.0/16, 10.10.60.0/24]
+  remote_subnets: [172.16.70.0/24]
+
+# --- Detection -------------------------------------------------------------
+# ids1 has no IP address: it only listens on a mirror port of the core switches (T17).
+ids:
+  host: ids1
+  attach_to: c1

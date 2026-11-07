@@ -1,0 +1,14 @@
+# Python packages for Fortress-Net, installed inside the VM into ~/venvs/fortress by scripts/setup_vm.sh (T02).
+# The SDN controller (os-ken or Ryu) is installed separately by T02 because it may need its own Python version.
+
+pyyaml            # reads config/fortress.yaml
+jinja2            # renders router/service configs from fortress.yaml
+networkx          # topology graph and shortest paths in the controller
+scikit-learn      # Isolation Forest anomaly model
+pandas            # feature tables and CSVs
+joblib            # saves the trained model
+scapy             # per-host features from the ids1 mirror port
+flask             # small REST endpoints (block API, exporter helpers)
+requests          # threat engine -> controller REST calls, Telegram
+prometheus-client # exporter metrics
+matplotlib        # charts for the chaos-test results

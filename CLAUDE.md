@@ -87,9 +87,9 @@ Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, d
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file).
-- In progress: T01 (dev-the-dev-while-deving).
-- Next free: T02 after T01; T02b can be written in parallel.
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`).
+- In progress: none.
+- Next free: T02; T02b can be written in parallel.
 
 ## Running the lab (from the Mac)
 These scripts don't exist yet; the task that creates each one is in brackets.
@@ -98,3 +98,4 @@ These scripts don't exist yet; the task that creates each one is in brackets.
 - Environment check: `./scripts/vm/vm.sh ./scripts/check_env.sh` (T02)
 - Tests: `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py` (T25)
 - Snapshot: `./scripts/vm/snapshot.sh <name>` (exists)
+- Config check: `./scripts/vm/vm.sh python3 scripts/check_config.py` (exists; run it after every edit to `fortress.yaml`)

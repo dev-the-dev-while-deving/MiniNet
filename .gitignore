@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+venvs/
+
+# Secrets (Telegram bot token, VPN keys): use environment variables or .env
+.env
+*.key
+*.pem
+
+# Packet captures (keep them local; attach the important ones to the report instead)
+*.pcap
+*.pcapng
+
+# Trained ML models and generated datasets
+*.joblib
+*.pkl
+detection/data/
+
+# Runtime logs (Suricata, controller, threat engine)
+*.log
+eve.json
+
+# OS and editor junk
+.DS_Store
+.claude/worktrees/

@@ -1,6 +1,36 @@
 # Fortress-Net
 
-A self-healing, AI-assisted secure network for a military base, built in Mininet. See `FORTRESS-NET-ROADMAP.md` for the design.
+A self-healing, AI-assisted secure network for a military base, built in Mininet with real Linux networking software (Open vSwitch, an OpenFlow controller, FRRouting, strongSwan, Suricata, Prometheus/Grafana).
+
+It survives link and router failures by itself, detects insider attacks with Suricata plus an Isolation Forest model, explains every threat score, and isolates the attacker automatically.
+
+- Design and roadmap: [`FORTRESS-NET-ROADMAP.md`](FORTRESS-NET-ROADMAP.md)
+- Task queue and progress: [`CLAUDE-CODE-TASKS.md`](CLAUDE-CODE-TASKS.md)
+- All addresses and names: [`config/fortress.yaml`](config/fortress.yaml). Check it with `./scripts/vm/vm.sh python3 scripts/check_config.py`
+
+## Repository layout
+
+| Folder | What lives there |
+|--------|------------------|
+| `config/` | `fortress.yaml`, the single source of truth for zones, VLANs, subnets, hosts and router links |
+| `topology/` | Mininet topology script |
+| `controller/` | SDN controller app and its REST block API |
+| `configs/` | Router and service configs (FRR, strongSwan, dnsmasq, rsyslog, chrony, iptables), generated from `fortress.yaml` |
+| `ansible/` | Optional; probably unused (see `docs/decisions.md` once T02b is done) |
+| `detection/` | Suricata rules, flow collector, baseline traffic, ML model, threat engine |
+| `monitoring/` | Prometheus config, exporter, Grafana dashboards |
+| `scripts/` | Lab start/stop, setup, checks, failover and chaos tests; `scripts/vm/` manages the VM |
+| `docs/` | Decisions, evidence (screenshots, pcaps), report |
+
+Empty folders hold a `.gitkeep` until the task that fills them.
+
+## Quick start
+
+1. Create the lab VM (below): `./scripts/vm/create_vm.sh`
+2. Install the lab software in it (T02): `./scripts/vm/vm.sh sudo ./scripts/setup_vm.sh`
+3. Start the lab (T07): `./scripts/vm/vm.sh sudo ./scripts/start_all.sh`
+
+Steps 2 and 3 work once those tasks are done.
 
 ## Lab VM
 
