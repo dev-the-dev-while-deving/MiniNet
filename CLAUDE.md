@@ -30,7 +30,9 @@ GitHub (`dev-the-dev-while-deving/MiniNet`, branch `main`) is the shared state. 
 - This folder is mounted in the VM at `/home/ubuntu/fortress-net` (native 9p mount, so files edited on the Mac appear in the VM straight away).
 - Edit files on the Mac; run, install and test **only inside the VM** with `./scripts/vm/vm.sh <command>`. The arguments run under `bash -lc` in the project folder, so quote pipes: `./scripts/vm/vm.sh 'ip a | grep inet'`. Never install Mininet, OVS or FRR on the Mac.
 - If the `fortress` VM doesn't exist yet (`multipass list`), do task T-1 first.
-- Venvs (`~/venvs/`), Suricata logs and Prometheus data live inside the VM, not in the shared folder. Shared mounts are slower and break sockets and venvs.
+- Venvs, Suricata logs and Prometheus data live inside the VM, not in the shared folder. Shared mounts are slower and break sockets and venvs.
+- Python (decisions D3, D7): system `python3` (3.10) for the Mininet topology (run as root); `~/venvs/ryu` (3.9) for the Ryu controller (`~/venvs/ryu/bin/ryu-manager`); `~/venvs/fortress` (3.10) for detection, ML and monitoring. Venvs are **not** on PATH; always call them by full path.
+- Apple Silicon VMs need `OPENSSL_armcap=0` (set in `/etc/environment` by `setup_vm.sh`) or pip-installed OpenSSL crashes with "Illegal instruction" (D8). chrony keeps the VM clock; after any VM stop/start, re-sync it with `sudo chronyc -a makestep` (D9).
 - Packet captures: `tcpdump -w docs/evidence/<name>.pcap` in the VM, then open them in Wireshark on the Mac.
 - Snapshots: `./scripts/vm/snapshot.sh <name>`. Planned names are `clean-vm` (after T-1), `clean-setup` (after T02) and `demo-ready`. Restore with `multipass stop fortress && multipass restore fortress.<name>`.
 - `sudo` on the Mac needs the user's password, which Claude can't type. Run Mac-side sudo commands in a terminal tab the user can see.
@@ -39,7 +41,7 @@ GitHub (`dev-the-dev-while-deving/MiniNet`, branch `main`) is the shared state. 
 | Layer | Software |
 |-------|----------|
 | 1. Virtual network | Mininet + Open vSwitch |
-| 2. SDN controller | os-ken on Python 3.10, or Ryu in a Python 3.9 venv (decided in T02) |
+| 2. SDN controller | Ryu 4.34 + eventlet 0.30.2 on Python 3.9 (os-ken dropped its launcher and sample apps; see D3) |
 | 3. Routing and WAN | FRRouting in router namespaces: OSPF, VRRP, static; iptables NAT |
 | 4. Services | dnsmasq (DHCP/DNS), rsyslog, strongSwan IPsec, sshd. chrony optional |
 | 5. Detection | Suricata on a mirror port + scikit-learn Isolation Forest |
@@ -87,15 +89,15 @@ Filled in by T02b; the full reasoning goes in `docs/decisions.md`. Until then, d
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`).
-- In progress: T02 (dev-the-dev-while-deving).
-- Next free: T02; T02b can be written in parallel.
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`).
+- In progress: none.
+- Next free: T02b (architecture decisions), then T03.
 
 ## Running the lab (from the Mac)
 These scripts don't exist yet; the task that creates each one is in brackets.
 - Start: `./scripts/vm/vm.sh sudo ./scripts/start_all.sh` (T07)
 - Stop: `./scripts/vm/vm.sh sudo ./scripts/stop_all.sh`, which always runs `sudo mn -c` (T07)
-- Environment check: `./scripts/vm/vm.sh ./scripts/check_env.sh` (T02)
+- Environment check: `./scripts/vm/vm.sh ./scripts/check_env.sh --smoke` (exists; all green after `setup_vm.sh`)
 - Tests: `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py` (T25)
 - Snapshot: `./scripts/vm/snapshot.sh <name>` (exists)
 - Config check: `./scripts/vm/vm.sh python3 scripts/check_config.py` (exists; run it after every edit to `fortress.yaml`)

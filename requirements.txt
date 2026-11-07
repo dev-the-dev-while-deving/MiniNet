@@ -1,5 +1,5 @@
-# Python packages for Fortress-Net, installed inside the VM into ~/venvs/fortress by scripts/setup_vm.sh (T02).
-# The SDN controller (os-ken or Ryu) is installed separately by T02 because it may need its own Python version.
+# Python packages for Fortress-Net, installed inside the VM into ~/venvs/fortress (Python 3.10) by scripts/setup_vm.sh.
+# The Ryu controller is NOT here: it needs Python 3.9 and lives in ~/venvs/ryu (see docs/decisions.md D3).
 
 pyyaml            # reads config/fortress.yaml
 jinja2            # renders router/service configs from fortress.yaml
