@@ -1,0 +1,35 @@
+#!/bin/sh
+# fortress-udhcpc-script: what BusyBox udhcpc runs when a Fortress-Net host gets or loses a lease.
+#
+# Why BusyBox udhcpc and not Ubuntu's dhclient? Ubuntu's AppArmor profile for dhclient only lets
+# it run the stock hook script and write leases to /var/lib/dhcp, and the stock script would
+# overwrite the VM's shared /etc/resolv.conf (Mininet hosts share one filesystem, decisions D12).
+# udhcpc has no such profile and runs whatever hook we give it (decisions D17).
+#
+# udhcpc calls this with the event as $1 and the lease in environment variables:
+#   $interface, $ip, $mask (prefix length), $router, $dns, $domain
+
+node="${interface%-eth0}"            # cmd1-eth0 -> cmd1
+dir="/var/run/fortress/$node"
+
+case "$1" in
+  deconfig)                          # starting up, or lease lost: no address yet
+    ip link set dev "$interface" up
+    ip -4 addr flush dev "$interface"
+    ;;
+  bound|renew)
+    ip -4 addr flush dev "$interface"
+    ip addr add "$ip/$mask" dev "$interface"
+    for r in $router; do             # first router = default gateway (the zone's VIP)
+      ip route replace default via "$r" dev "$interface"
+      break
+    done
+    {
+      [ -n "$domain" ] && echo "search $domain"
+      for ns in $dns; do echo "nameserver $ns"; done
+    } > "$dir/resolv.conf"
+    ;;
+  leasefail|nak)
+    ;;                               # udhcpc keeps retrying by itself
+esac
+exit 0

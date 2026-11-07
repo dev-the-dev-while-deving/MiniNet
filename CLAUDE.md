@@ -95,7 +95,7 @@ Follow these in every network task. If one turns out wrong, change `docs/decisio
 
 ## Status
 Live claims are in the `CLAUDE-CODE-TASKS.md` checklist; this is a short summary.
-- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`).
+- Done: T-1 (scripts; each member runs `create_vm.sh` on their own machine), T00 (this file), T01 (scaffold + `config/fortress.yaml`), T02 (`setup_vm.sh`, `check_env.sh`; Ryu on 3.9; snapshot `clean-setup`), T02b (decisions D10–D15), T03 (`topology/fortress_topo.py`, `--check`), T04 (dnsmasq on srv1, relays on r1/r2, udhcpc).
 - In progress: T03–T07 (dev-the-dev-while-deving), one at a time.
 - Next free: T03 (topology).
 

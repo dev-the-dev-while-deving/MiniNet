@@ -33,6 +33,7 @@ from mininet.net import Mininet
 from mininet.node import Host, OVSSwitch, RemoteController
 
 import checks
+import services
 from labconfig import Lab
 
 OF_PORT = 6653
@@ -101,10 +102,13 @@ class FortressNet:
                 self.switch_port(f"{s}-{c}", s, trunk=True)
                 self.switch_port(f"{c}-{s}", c, trunk=True)
 
-        # Zone, FOB and internet hosts.
+        # Zone, FOB and internet hosts. DHCP hosts start with no address: srv1 hands it out (T04).
         for h in lab.hosts.values():
-            static_ip = f"{h['ip']}/{h['prefixlen']}"
-            net.addHost(h["name"], ip=static_ip, mac=h["mac"], defaultRoute=f"via {h['gateway']}")
+            if h["dhcp"]:
+                net.addHost(h["name"], ip=None, mac=h["mac"])
+            else:
+                net.addHost(h["name"], ip=f"{h['ip']}/{h['prefixlen']}", mac=h["mac"],
+                            defaultRoute=f"via {h['gateway']}")
             if h["zone"] == "internet":
                 continue  # linked to r4 below
             sw = h["switch"]
@@ -261,10 +265,12 @@ def main():
         if args.standalone:
             info("*** Waiting for RSTP to converge\n")
             info(f"*** RSTP converged in {fnet.wait_for_rstp():.1f} s\n")
+        services.start(net, lab)
         failures = checks.run_all(net, lab, args)
         if not args.check:
             CLI(net)
     finally:
+        services.stop(net, lab)
         net.stop()
     if args.check:
         sys.exit(1 if failures else 0)

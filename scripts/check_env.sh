@@ -53,7 +53,7 @@ check "tshark"             bash -c 'tshark --version | head -1'
 check "tree"               tree --version
 check "arping"             bash -c "arping -V 2>&1 | head -1"
 pkg   "DHCP relay"         isc-dhcp-relay
-check "dhclient"           bash -c "command -v dhclient"
+check "udhcpc (BusyBox)"   bash -c "busybox udhcpc --help 2>&1 | head -1"
 check "dig"                bash -c "dig -v 2>&1 | head -1"
 
 echo "== Monitoring"

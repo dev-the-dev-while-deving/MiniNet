@@ -120,6 +120,37 @@ def check_rstp(net, lab, r):
     r.check(blocked >= 1, "redundant uplinks are blocked", f"{blocked} alternate/backup ports")
 
 
+# --- T04: DHCP and DNS ----------------------------------------------------------
+def check_dhcp(net, lab, r):
+    """Every DHCP host got its reserved address, in its own zone's subnet."""
+    output("== DHCP (dnsmasq on srv1, relayed by r1/r2)\n")
+    for h in lab.hosts.values():
+        if not h["dhcp"]:
+            continue
+        out = net[h["name"]].cmd(f"ip -4 -o addr show dev {h['name']}-eth0")
+        m = re.search(r"inet (\S+)", out)
+        got = m.group(1) if m else "no address"
+        want = f"{h['ip']}/{h['prefixlen']}"
+        r.check(got == want, f"{h['name']} got {got}", f"(expected {want}, zone {h['zone']})")
+
+
+def check_dns(net, lab, r):
+    """Every DHCP host resolves srv1.<domain> using the DNS server its lease told it about."""
+    output(f"== DNS (srv1.{lab.domain} via the DNS server from each lease)\n")
+    srv = lab.host_with_role("dhcp-dns")
+    name = f"{srv['name']}.{lab.domain}"
+    for h in lab.hosts.values():
+        if not h["dhcp"]:
+            continue
+        resolv = net[h["name"]].cmd(f"cat /var/run/fortress/{h['name']}/resolv.conf 2>/dev/null")
+        m = re.search(r"nameserver (\S+)", resolv)
+        if not m:
+            r.bad(f"{h['name']} resolves {name}", "(no DNS server in its lease)")
+            continue
+        answer = net[h["name"]].cmd(f"dig +short +time=2 +tries=2 {name} @{m.group(1)}").strip()
+        r.check(answer == srv["ip"], f"{h['name']} resolves {name}", f"-> {answer or 'nothing'} via {m.group(1)}")
+
+
 def run_all(net, lab, args):
     """Run every check that fits what the lab currently has. Returns the number of failures."""
     r = Results()
@@ -129,5 +160,7 @@ def run_all(net, lab, args):
     check_same_zone(net, lab, r)
     check_vlan_isolation(net, lab, r)
     check_no_storm(net, lab, r)
+    check_dhcp(net, lab, r)
+    check_dns(net, lab, r)
     output(f"*** {r.passed} passed, {r.failed} failed\n\n")
     return r.failed

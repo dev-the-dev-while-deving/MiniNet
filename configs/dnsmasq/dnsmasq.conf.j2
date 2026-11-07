@@ -1,0 +1,47 @@
+# dnsmasq.conf for {{ node }}: DHCP and DNS for every Fortress-Net zone.
+# GENERATED from config/fortress.yaml by topology/render_configs.py. Do not edit by hand;
+# change the YAML or this template (configs/dnsmasq/dnsmasq.conf.j2) instead.
+
+# --- Where to listen ---------------------------------------------------------
+# Only on srv1's lab interface. bind-interfaces makes dnsmasq bind to that address
+# alone instead of every address in the namespace.
+interface={{ intf }}
+bind-interfaces
+
+# Files for this instance only: Mininet hosts share one filesystem (decisions D12).
+pid-file={{ run_dir }}/dnsmasq.pid
+dhcp-leasefile={{ run_dir }}/dnsmasq.leases
+log-facility={{ log_dir }}/dnsmasq.log
+log-dhcp
+user=dnsmasq
+
+# --- DNS -----------------------------------------------------------------------
+# The lab has no real upstream DNS: answer only for {{ domain }} and from our own records.
+no-resolv
+no-hosts
+domain={{ domain }}
+local=/{{ domain }}/
+
+# Hosts with fixed addresses (servers, routers, FOB, internet, monitor).
+{% for name, ip in records %}
+host-record={{ name }}.{{ domain }},{{ ip }}
+{% endfor %}
+
+# --- DHCP ------------------------------------------------------------------------
+# One scope per zone. Requests arrive through the DHCP relays on r1/r2; dnsmasq picks the
+# scope whose subnet contains the relay's address (giaddr).
+dhcp-authoritative
+{% for z in dhcp_zones %}
+
+# {{ z.title }} (VLAN {{ z.vlan }})
+dhcp-range=set:{{ z.name }},{{ z.pool_start }},{{ z.pool_end }},{{ z.netmask }},12h
+dhcp-option=tag:{{ z.name }},option:router,{{ z.vip }}
+dhcp-option=tag:{{ z.name }},option:dns-server,{{ dns_ip }}
+dhcp-option=tag:{{ z.name }},option:domain-name,{{ domain }}
+{% endfor %}
+
+# Reservations: each known host always gets the same address (and a DNS name, e.g. cmd1.{{ domain }}).
+# The MACs are fixed by the topology (02:fe + the IP bytes, decisions D16).
+{% for h in dhcp_hosts %}
+dhcp-host={{ h.mac }},{{ h.ip }},{{ h.name }}
+{% endfor %}

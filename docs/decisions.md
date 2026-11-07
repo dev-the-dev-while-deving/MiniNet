@@ -112,3 +112,13 @@ This replaces the roadmap's `controller/block_api.py`: the block API is `rest_ap
 - **ids1's two ports are parked on unused VLAN 4094** until T17 turns them into mirror outputs, so they receive nothing yet.
 - **Exactly one internet host, cabled straight to r4.** More would need a switch; that's a one-line change if it's ever needed.
 - **`--check` mode** builds the lab, runs `topology/checks.py` and exits with the number of failures. It's how the automated tests (and later `start_all.sh`) know the lab is healthy.
+
+## T04: DHCP and DNS
+
+**D17. DHCP and DNS details.**
+- **dnsmasq on srv1** does both DHCP and DNS from one config rendered from `fortress.yaml` (`configs/dnsmasq/dnsmasq.conf.j2`). It has one scope per zone, and a reservation per host by MAC, so every host always gets the address listed in the YAML. Tests and attack scenarios can then rely on `bar3` being 192.168.40.66. DNS answers only for `fortress.mil` (the lab has no upstream DNS).
+- **DHCP relays on both r1 and r2** (ISC `dhcrelay`). The relay puts its own zone address in the request (`giaddr`), and dnsmasq picks the matching scope from it. srv1 answers both relays and the client takes the first offer; both offers carry the same reserved address. "Packet to bogus giaddr" lines in the VM's syslog are harmless: r1 sees replies addressed to r2's relay and drops its copy.
+- **BusyBox `udhcpc` as the DHCP client, not Ubuntu's `dhclient`.** Ubuntu's AppArmor profile for dhclient only lets it run its stock hook script and write leases to `/var/lib/dhcp`. Our hook script was refused ("Permission denied" in the AppArmor audit log). The stock script would also overwrite the VM's shared `/etc/resolv.conf`. We don't loosen the VM's AppArmor profile; `udhcpc` has none and runs our hook `configs/udhcpc/fortress-udhcpc-script`, which only sets the host's own address and route and writes DNS settings to `/var/run/fortress/<host>/resolv.conf`.
+- **Hosts share the VM's `/etc/resolv.conf`,** so `ping srv1.fortress.mil` inside a host would ask the VM's resolver, not srv1. Checks and demos use `dig @<server from the lease>`, which tests what DHCP really handed out.
+- **Temporary gateways (T04–T05 only):** srv1's replies to the relays and every host's default route need the zone gateway `.1`, which VRRP only provides from T06. Until then r1 holds each `.1` as a plain extra address. T06 replaces this.
+- **We record udhcpc's PID ourselves,** because it runs in the foreground in the background (`-f ... &`), so `services.stop()` can always kill it. dhclient only wrote its PID file after getting a lease, so failed clients were left running.

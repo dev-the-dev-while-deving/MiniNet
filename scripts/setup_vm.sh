@@ -70,7 +70,7 @@ apt_get install -y -q \
   mininet openvswitch-switch \
   frr frr-pythontools \
   suricata \
-  dnsmasq-base isc-dhcp-relay \
+  dnsmasq-base isc-dhcp-relay busybox-static \
   rsyslog \
   strongswan-swanctl charon-systemd \
   nmap iperf3 tcpdump tshark iputils-arping \

@@ -1,0 +1,116 @@
+"""services.py: starts and stops the lab's daemons inside the Mininet nodes.
+
+Every daemon runs inside its node's network namespace (we run it through node.cmd(),
+which executes in that node's shell), and gets its own PID file, logs and runtime files
+under /var/run/fortress/<node>/ and /var/log/fortress/<node>/, because Mininet hosts
+share one filesystem (decisions D12).
+
+start() brings the services up in dependency order; stop() kills everything we started,
+using the PID files, so nothing is left running after the lab stops.
+"""
+import os
+import shutil
+import signal
+import time
+from pathlib import Path
+
+from mininet.log import info
+
+import render_configs
+from render_configs import ETC, LOG, RUN, ROOT
+
+UDHCPC_SCRIPT = ROOT / "configs" / "udhcpc" / "fortress-udhcpc-script"
+
+
+def node_dirs(node, owner=None):
+    """Create /var/run/fortress/<node> and /var/log/fortress/<node>, optionally owned by a
+    service user (a daemon that drops root must still be able to write there)."""
+    for d in (RUN / node, LOG / node):
+        d.mkdir(parents=True, exist_ok=True)
+        if owner:
+            shutil.chown(d, user=owner)
+
+
+# --- Gateways ----------------------------------------------------------------------
+def start_temporary_gateways(net, lab):
+    """Until VRRP exists (T06), r1 holds every zone's gateway address (.1) as a plain
+    extra address, so hosts and servers have a working default gateway."""
+    r1 = lab.gateway_routers()[0]
+    for z in lab.zones.values():
+        net[r1].cmd(f"ip addr add {z['vip']}/{z['prefixlen']} dev {r1}-lan.{z['vlan']}")
+
+
+# --- DHCP and DNS (T04) ------------------------------------------------------------
+def start_dhcp_server(net, lab):
+    """dnsmasq on srv1, with the config rendered from fortress.yaml."""
+    srv = lab.host_with_role("dhcp-dns")["name"]
+    node_dirs(srv, owner="dnsmasq")
+    conf = ETC / srv / "dnsmasq.conf"
+    out = net[srv].cmd(f"dnsmasq --conf-file={conf}")
+    if out.strip():
+        info(f"*** dnsmasq on {srv}: {out.strip()}\n")
+
+
+def start_dhcp_relays(net, lab):
+    """A DHCP relay on r1 and r2. Hosts broadcast DHCPDISCOVER in their own VLAN; the relay
+    on that VLAN's sub-interface forwards it as unicast to srv1 in the Servers VLAN, adding
+    its own address (giaddr) so srv1 knows which zone's scope to answer from."""
+    srv = lab.host_with_role("dhcp-dns")
+    upstream_vlan = lab.zones[srv["zone"]]["vlan"]
+    client_vlans = [z["vlan"] for z in lab.zones.values() if z.get("dhcp_range")]
+    for r in lab.gateway_routers():
+        node_dirs(r)
+        down = " ".join(f"-id {r}-lan.{v}" for v in client_vlans)
+        net[r].cmd(f"dhcrelay -4 -q -pf {RUN / r / 'dhcrelay.pid'} -iu {r}-lan.{upstream_vlan} {down} {srv['ip']}")
+
+
+def start_dhcp_clients(net, lab, timeout=30):
+    """Run a DHCP client (BusyBox udhcpc, decisions D17) on every DHCP host, all at once,
+    then wait until each has its address. Returns the hosts that got no lease in time."""
+    hosts = [h for h in lab.hosts.values() if h["dhcp"]]
+    for h in hosts:
+        name, intf = h["name"], f"{h['name']}-eth0"
+        node_dirs(name)
+        # -f: stay in the foreground (we background it with &, so its PID is known right away);
+        # -s: our hook script; -x hostname: tell the server who we are; -t/-T: retry every 2 s.
+        # udhcpc keeps running to renew the lease, so it's stopped with the other daemons.
+        pid = net[name].cmd(f"busybox udhcpc -f -i {intf} -s {UDHCPC_SCRIPT} -x hostname:{name} "
+                            f"-t 10 -T 2 > {LOG / name / 'udhcpc.log'} 2>&1 & echo $!").strip()
+        (RUN / name / "udhcpc.pid").write_text(pid.splitlines()[-1] + "\n")
+    missing = {h["name"] for h in hosts}
+    deadline = time.time() + timeout
+    while missing and time.time() < deadline:
+        for name in list(missing):
+            if "inet " in net[name].cmd(f"ip -4 -o addr show dev {name}-eth0"):
+                missing.discard(name)
+        time.sleep(0.5)
+    return sorted(missing)
+
+
+# --- Start and stop ---------------------------------------------------------------
+def start(net, lab):
+    """Bring every service up, in order. Each step depends on the ones before it."""
+    info("*** Rendering configs from fortress.yaml\n")
+    for f in render_configs.render_all(lab):
+        info(f"    {f}\n")
+    info("*** Gateways: r1 holds the zone gateway addresses (until VRRP, T06)\n")
+    start_temporary_gateways(net, lab)
+    info("*** DHCP/DNS server (dnsmasq on srv1) and relays (r1, r2)\n")
+    start_dhcp_server(net, lab)
+    start_dhcp_relays(net, lab)
+    info("*** DHCP clients\n")
+    missing = start_dhcp_clients(net, lab)
+    if missing:
+        info(f"*** No DHCP lease for: {', '.join(missing)}\n")
+
+
+def stop(net=None, lab=None):
+    """Stop every daemon we started, using the PID files under /var/run/fortress.
+    Safe to call when nothing is running (stop_all.sh calls it after a crash)."""
+    for pidfile in sorted(RUN.glob("*/*.pid")):
+        try:
+            pid = int(pidfile.read_text().split()[0])
+            os.kill(pid, signal.SIGTERM)
+        except (ValueError, IndexError, ProcessLookupError, PermissionError):
+            pass
+        pidfile.unlink(missing_ok=True)

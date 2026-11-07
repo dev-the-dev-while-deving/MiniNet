@@ -139,6 +139,10 @@ class Lab:
         """The routers that act as zone gateways (r1 and r2)."""
         return [r for r, info in self.routers.items() if info["role"] == "gateway"]
 
+    def host_with_role(self, role):
+        """The host with a given role, e.g. "dhcp-dns" -> srv1."""
+        return next(h for h in self.hosts.values() if h["role"] == role)
+
     def router_with_role(self, role):
         return next(r for r, info in self.routers.items() if info["role"] == role)
 
