@@ -563,7 +563,14 @@ def check_rogue(net, lab, r):
         fake.cmd(f"printf 'interface {fake.name}-eth0\\nstart 192.168.40.150\\nend 192.168.40.160\\n"
                  f"lease_file {d}/udhcpd.leases\\npidfile {d}/udhcpd.pid\\nopt router 192.168.40.66\\n' > {d}/udhcpd.conf;"
                  f" touch {d}/udhcpd.leases; busybox udhcpd -f {d}/udhcpd.conf > {d}/udhcpd.txt 2>&1 &")
-        time.sleep(1)
+        # Wait until the fake server is really listening on UDP 67 (up to 5 s). A fixed 1 s sleep
+        # was too short straight after a VM boot: the request came before the fake server was
+        # up, so it never offered anything and the test had nothing to prove (T29).
+        for _ in range(25):
+            if fake.cmd("ss -Hlun 'sport = :67'").strip():
+                break
+            time.sleep(0.2)
+        time.sleep(0.3)
         out = victim.cmd(f"busybox udhcpc -n -q -t 4 -T 1 -i {victim.name}-eth0 -s /bin/true 2>&1")
         m = re.search(r"lease of (\S+) obtained", out)
         got = m.group(1) if m else "nothing"
