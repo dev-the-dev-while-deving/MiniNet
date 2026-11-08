@@ -141,10 +141,10 @@ flowchart LR
 
 | Failure | What notices | What repairs it | Measured (median, 5 runs) |
 |---------|--------------|-----------------|---------------------------|
-| Core–access cable cut | the switch (port down) | controller reroute / fast-failover group | 23 ms reactive, 31 ms proactive |
+| Core–access cable cut | the switch (port down) | controller reroute / fast-failover group | 24 ms reactive, 25 ms proactive |
 | One of the two c1-c2 cables | the switch | select group drops the dead member | 19 / 19 ms |
-| r1 loses power | VRRP adverts stop (every 200 ms) | r2 becomes Master in 0.7 s; traffic moves in ~20-50 ms | 37 / 28 ms |
-| Primary WAN r1-r3 cut | carrier loss, OSPF (1 s hellos) | OSPF reroutes via r2; VPN follows (loopbacks) | 27 / 48 ms |
+| r1 loses power | VRRP adverts stop (every 200 ms) | r2 becomes Master in 0.7 s; traffic moves in ~20-130 ms | 29 / 132 ms |
+| Primary WAN r1-r3 cut | carrier loss, OSPF (1 s hellos) | OSPF reroutes via r2; VPN follows (loopbacks) | 48 / 127 ms |
 
 Numbers from [`docs/results/summary.csv`](results/summary.csv); how they were measured is in
 [`testing.md`](testing.md).

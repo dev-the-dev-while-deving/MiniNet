@@ -444,9 +444,41 @@ is 4 s, so a WAN failover can't be 35 ms. Checking the raw ping logs found:
 themselves; median recovery, reactive / proactive): link c1-s1 23 / 31 ms, one core cable 19 /
 19 ms, r1 power loss 37 / 28 ms (routed) and 50 / 31 ms (gateway address), primary WAN 27 / 48 ms.
 The ping stream resolves about 20 ms, and an earlier full run had the cable and WAN orderings the
-other way round, so the modes are not reliably different here; only r1's power loss favoured
-proactive in both runs. Insider response (`detection.csv`): blocked in 5/5 runs, median 6.3 s
-after the sweep began (1.3-7.3 s), scores 92-93 from four signals. The full suite is 142/142.
+other way round, so the modes are not reliably different here (T29's three further runs confirmed
+it, D40). Insider response (`detection.csv`): blocked in 5/5 runs, median 6.3 s after the sweep
+began (1.3-7.3 s), scores 92-93 from four signals. The full suite was 142/142 at the time.
 
 D28's known limit (r1 dying completely sends base <-> FOB traffic unencrypted via r2) still holds;
 the loopbacks fix the cut-cable case, not the dead-router case.
+
+## T29: Final hardening
+
+**D40. Three rounds from a fresh boot; one known issue recorded, not hidden.**
+Each round rebooted the VM, re-synced the clock, ran `start_all.sh --check`, then the full chaos
+test (5 failures x 5 runs x 2 modes, plus 5 insider runs).
+
+| Round | Check suite | Failure runs healed by themselves | Insider blocked |
+|-------|-------------|-----------------------------------|-----------------|
+| 1 | 139/142 | 50/50 | 5/5, median 6.3 s |
+| 2 | 140/142 | 50/50 | 5/5, median 6.3 s |
+| 3 | 140/142 | 50/50 | 5/5, median 6.3 s |
+
+- **The network itself never failed:** 150/150 failure runs healed, 15/15 insider runs blocked
+  (1.3-7.3 s, scores 92-93), in every round.
+- **Known issue: the rogue-DHCP test's two proof checks fail after a fresh boot (all 3 rounds).**
+  The protection check passes (bar2 still gets its correct address from srv1), but the test's
+  fake DHCP server on bar1 never sends an OFFER, so there is nothing for the controller to drop
+  and the test cannot show the drop. It passed on a lab that had been running (142/142, T25). A
+  wait for the fake server to listen (T29) did not change it. We chose to record it rather than
+  spend more time on it, because it is a test-setup problem in a feature the demo doesn't use;
+  the cause is not yet known. Every document now says 140/142 after a reboot instead of 142/142.
+- **Round 1 also failed "cmd1 still reaches fob1"** in the r1 power-loss test once: that is the
+  known 3-5 s FOB pause while r1 is dead (D28), landing inside the check's ping window.
+- **Reactive vs proactive:** the final run had proactive at about 130 ms for r1's power loss and
+  the WAN cut (reactive 29 and 48 ms), the opposite of the run before. With five full runs, the
+  only honest statement is that the modes cannot be told apart in this lab; every document says so.
+- **Secrets:** no secret file is tracked, and no token-shaped string appears anywhere in Git's
+  history (only the documented placeholder `123456:AA...`). `.env`, `*.key` and `*.joblib` are
+  ignored; the VPN key is made fresh at each start and stays on the VM's disk (D28).
+- **Not in Git: the trained model** (`detection/data/model.joblib`). On a new machine, train it
+  (README) or the engine scores on rules alone and says so.

@@ -10,7 +10,7 @@ from a file in [`docs/results/`](results).
 |------|------------------------|------|--------|
 | Environment | `./scripts/vm/vm.sh ./scripts/check_env.sh --smoke` | 1 min | ✅ per tool |
 | Config | `./scripts/vm/vm.sh python3 scripts/check_config.py` | seconds | errors, if any |
-| Full health + failure suite | `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` | ~8 min | 142 checks, exit code = failures |
+| Full health + failure suite | `./scripts/vm/vm.sh sudo ./scripts/start_all.sh --check` | ~8 min | 142 checks (140 pass after a reboot, see §6), exit code = failures |
 | Chaos test (T25) | `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py` | ~30 min | `results.csv`, `summary.csv`, `detection.csv`, 3 charts |
 | One failure only | `./scripts/vm/vm.sh sudo python3 scripts/chaos_test.py --runs 1 --only WAN` | 2 min | same files |
 | Threat scoring | `./scripts/vm/vm.sh '~/venvs/fortress/bin/python detection/threat_engine.py --self-check'` | seconds | worked examples pass |
@@ -19,7 +19,10 @@ from a file in [`docs/results/`](results).
 
 Only one lab can run in the VM at a time: each of these starts its own and clears any other.
 
-## 2. The health and failure suite (`start_all.sh --check`): 142/142
+## 2. The health and failure suite (`start_all.sh --check`): 140/142
+
+142/142 on a lab that has been running a while; **140/142 straight after a VM reboot**, in all three
+T29 rounds: the rogue-DHCP test's two *proof* checks fail (known issue, §6 and D40).
 
 [`topology/checks.py`](../topology/checks.py) runs these in order on the live lab. The first group
 only looks; the second (marked ⚡) breaks things on purpose and checks the repair.
@@ -68,22 +71,20 @@ Result, from [`summary.csv`](results/summary.csv) (all 50 runs healed by themsel
 
 | Failure | Mechanism | Reactive median (min-max) | Proactive median (min-max) |
 |---------|-----------|---------------------------|----------------------------|
-| Link c1-s1 down | SDN reroute / fast-failover | 23 ms (18-33) | 31 ms (19-37) |
-| One c1-c2 cable down | link aggregation | 19 ms (17-20) | 19 ms (17-20) |
-| r1 power loss (routed traffic) | VRRP | 37 ms (18-73) | 28 ms (24-80) |
-| r1 power loss (pinging the gateway) | VRRP takeover | 50 ms (16-55) | 31 ms (18-49) |
-| Primary WAN r1-r3 down | OSPF, VPN on loopbacks | 27 ms (17-72) | 48 ms (20-64) |
+| Link c1-s1 down | SDN reroute / fast-failover | 24 ms (23-49) | 25 ms (16-39) |
+| One c1-c2 cable down | link aggregation | 19 ms (17-21) | 19 ms (16-20) |
+| r1 power loss (routed traffic) | VRRP | 29 ms (20-48) | 132 ms (42-137) |
+| r1 power loss (pinging the gateway) | VRRP takeover | 27 ms (23-53) | 122 ms (34-128) |
+| Primary WAN r1-r3 down | OSPF, VPN on loopbacks | 48 ms (19-64) | 127 ms (48-132) |
+
+This is the final committed run (T29 round 3). Across all three T29 rounds, from a fresh VM boot
+each time, **150 of 150 failure runs healed by themselves**.
 
 ![Recovery per failure](results/recovery_by_failure.png)
 
 **Reading the numbers honestly.** Mininet hosts manage about 55 pings/s, so the measurement
 resolves about 20 ms; most of these recoveries are at or near that floor. What the table really
-shows: every failure heals by itself, in well under a tenth of a second, in both modes. Between
-the modes there is **no consistent difference**: across two full runs, the faster mode flipped for
-the cut cable and the WAN cut. The one repeatable gap is r1's power loss (proactive 26 and 28 ms,
-reactive 50 and 37 ms), where the proactive backup buckets move traffic to r2's port without
-waiting for the controller. In this small, fast lab the controller reacts almost as quickly as the
-switch; fast-failover would matter more where the controller is far away or busy. VRRP itself takes 0.7 s to declare r2
+shows: every failure heals by itself, within about a tenth of a second at worst, in both modes. Between the modes there is **no consistent difference**: across five full runs, the faster mode changed from run to run for every failure (in the final run proactive was slower when r1 died or the WAN was cut, about 130 ms, while in the run before it was faster). In this small, fast lab the controller reacts about as quickly as the switch itself; fast-failover would matter more where the controller is far away or busy. VRRP itself takes 0.7 s to declare r2
 Master, yet hosts lose nothing, because r2 already owns the virtual MAC and forwards as soon as
 frames reach it (D39).
 
@@ -126,6 +127,11 @@ Testing earned its keep: each of these was found by a test, not by reading code.
 | demo rehearsal | FOB traffic pauses ~5 s while r1 is dead | known limit, explained in the demo; fix = second tunnel on r2 | D28 |
 
 ## 6. Known limits
+
+- **After a fresh VM boot, `--check` is 140/142.** The rogue-DHCP test's protection check passes
+  (the victim still gets its address from srv1), but its fake DHCP server never sends an offer, so
+  the two checks that prove the controller dropped it fail. Passes on a lab that has been running.
+  Recorded, cause not found (D40).
 
 - **r1 dying stops FOB traffic for about 3-5 s.** The tunnel lives on r1; r3 must first notice r1
   is dead (dead-peer detection) before traffic falls back, unencrypted, via r2. A second tunnel on

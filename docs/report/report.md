@@ -118,7 +118,10 @@ Full details and how to repeat every test: [`docs/testing.md`](../testing.md).
 ### 4.1 Automated health and failure suite
 `start_all.sh --check` runs 142 checks on the live network, from DHCP leases and OSPF adjacencies
 to a full insider attack, including eight disruptive tests that break something on purpose and
-check the repair. Final result: **142/142**.
+check the repair. Result: **142/142** on a lab that has been up for a while, and **140/142**
+straight after a VM reboot (three rounds in a row). The two failures are the rogue-DHCP test's
+proof steps: the protected host still gets its correct address, but the test's fake DHCP server
+does not answer in time, so the drop cannot be shown. It is recorded as a known issue (D40).
 
 ### 4.2 Recovery, measured (chaos test)
 
@@ -126,18 +129,20 @@ check the repair. Final result: **142/142**.
 
 | Failure | Mechanism | Reactive | Proactive | Healed by itself |
 |---------|-----------|----------|-----------|------------------|
-| Core–access cable cut | SDN reroute / fast-failover | 23 ms | 31 ms | 10/10 |
+| Core–access cable cut | SDN reroute / fast-failover | 24 ms | 25 ms | 10/10 |
 | One of two core cables cut | link aggregation | 19 ms | 19 ms | 10/10 |
-| Gateway router r1 loses power | VRRP | 37 ms | 28 ms | 10/10 |
-| Primary WAN cut | OSPF, VPN on loopbacks | 27 ms | 48 ms | 10/10 |
+| Gateway router r1 loses power | VRRP | 29 ms | 132 ms | 10/10 |
+| Primary WAN cut | OSPF, VPN on loopbacks | 48 ms | 127 ms | 10/10 |
+
+Repeated three times from a fresh VM boot (T29): **150/150 failure runs healed by themselves**,
+and the insider was blocked in **15/15** runs.
 
 ![Recovery time per failure](../results/recovery_by_failure.png)
 
 The measurement resolves about 20 ms, so most of these are at its floor: the honest conclusion is
-that every failure is bypassed automatically in well under 0.1 s. Between the two modes there
-is no consistent difference except r1's power loss, where proactive was faster in both full runs
-(26 vs 50 ms, then 28 vs 37 ms): in a small lab the controller reacts almost as fast as the
-switch itself.
+that every failure is bypassed automatically, within about 0.14 s at worst. Across five full runs
+the faster of the two modes changed from run to run for every failure, so they cannot be told
+apart here: in a small lab the controller reacts about as fast as the switch itself.
 
 ### 4.3 Insider attack
 In 5 timed runs, a 200-port sweep from Barracks host bar3 was flagged by Suricata 1.3 s after it

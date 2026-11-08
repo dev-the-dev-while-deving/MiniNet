@@ -330,9 +330,13 @@ outage that never ended, and behind it the VPN didn't survive a cut WAN cable. B
 three more VPN faults ([testing.md §5](testing.md)). An examiner will like this: it shows we
 tested rather than assumed.
 
-**Is proactive faster than reactive?** Not reliably in our lab: both recover in ~20-50 ms and the
-order flipped between runs, except r1's power loss, where proactive won both times. The
-controller is local and quick here; fast-failover matters more with a remote or busy controller.
+**Is proactive faster than reactive?** Not in our lab: both recover in roughly 20-130 ms, and
+across five full runs the faster mode changed from run to run for every failure. The controller
+is local and quick here; fast-failover matters more with a remote or busy controller.
+
+**Does everything pass?** 142/142 on a running lab; 140/142 straight after a reboot. The two
+failures are the rogue-DHCP test's proof steps (the fake server doesn't answer in time, so the
+drop can't be shown); the protected host still gets the right address. Known issue, D40.
 
 **Why did you drop T22 (threat-aware rerouting)?** We built it and tested it: in this topology an
 access switch is never a transit node, and routed traffic has to reach the VRRP Master's core, so
